@@ -14,3 +14,21 @@ HIP-CPU/
 # Temporary files
 *.tmp
 *.bak
+
+# Archived documentation (never commit)
+docs/archive/
+docs/phase2-polygeist/archive/
+
+# Build outputs
+Polygeist/build/
+Polygeist/llvm-project/build/
+*.o
+*.a
+*.so
+
+# Logs
+*.log
+
+# Claude dev files
+.claude/
+.development-rules.md

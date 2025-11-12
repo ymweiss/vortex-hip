@@ -1,0 +1,10 @@
+[submodule "vortex"]
+	path = vortex
+	url = https://github.com/vortexgpgpu/vortex
+[submodule "llvm-vortex"]
+	path = llvm-vortex
+	url = https://github.com/vortexgpgpu/llvm
+[submodule "Polygeist"]
+	path = Polygeist
+	url = https://github.com/ymweiss/Polygeist
+	branch = main
