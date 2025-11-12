@@ -283,15 +283,15 @@ Test Coverage:
 ## Documentation
 
 ### Phase 1 Documentation
-- **[phase1-runtime-tests/README.md](phase1-runtime-tests/README.md)** - Runtime test details
-- **[phase1-metadata/README.md](phase1-metadata/README.md)** - Metadata system
+- **[phase1-runtime-tests/README.md](../phase1-runtime-tests/README.md)** - Runtime test details
+- **[phase1-metadata/README.md](../phase1-metadata/README.md)** - Metadata system
 - **[PHASES_OVERVIEW.md](PHASES_OVERVIEW.md)** - Complete phase breakdown
 - **[PHASE1_COMPLETE.md](PHASE1_COMPLETE.md)** - This document
 
 ### Technical References
-- **[runtime/include/vortex_hip_runtime.h](runtime/include/vortex_hip_runtime.h)** - HIP API
-- **[vortex/runtime/include/vortex.h](vortex/runtime/include/vortex.h)** - Vortex API
-- **[vortex/scripts/hip_metadata_gen.py](vortex/scripts/hip_metadata_gen.py)** - Metadata generator
+- **[runtime/include/vortex_hip_runtime.h](../runtime/include/vortex_hip_runtime.h)** - HIP API
+- **[vortex/runtime/include/vortex.h](../vortex/runtime/include/vortex.h)** - Vortex API
+- **[vortex/scripts/hip_metadata_gen.py](../vortex/scripts/hip_metadata_gen.py)** - Metadata generator
 
 ---
 

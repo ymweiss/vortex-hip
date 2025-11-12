@@ -104,9 +104,9 @@ Phase 1 tests the *runtime*, not the compiler. Using Vortex kernels isolates run
 **Phase 1 provides a working runtime foundation for Phase 2 compiler integration.**
 
 ### Documentation
-- **[phase1-runtime-tests/README.md](phase1-runtime-tests/README.md)** - Runtime test details
-- **[phase1-metadata/README.md](phase1-metadata/README.md)** - Metadata generation
-- **[runtime/](runtime/)** - HIP runtime library source
+- **[phase1-runtime-tests/README.md](../phase1-runtime-tests/README.md)** - Runtime test details
+- **[phase1-metadata/README.md](../phase1-metadata/README.md)** - Metadata generation
+- **[runtime/](../runtime/)** - HIP runtime library source
 
 ---
 
@@ -215,9 +215,9 @@ __global__ void kernel_add(float* a, float* b, float* c, int n) {
 ✅ New HIP-specific features work (shared memory, etc.)
 
 ### Documentation
-- **[phase2-compiler/README.md](phase2-compiler/README.md)** - Detailed planning
-- **[docs/implementation/COMPILER_INFRASTRUCTURE.md](docs/implementation/COMPILER_INFRASTRUCTURE.md)** - Technical design
-- **[docs/implementation/IMPLEMENTATION_CHECKLIST.md](docs/implementation/IMPLEMENTATION_CHECKLIST.md)** - Task breakdown
+- **[phase2-compiler/README.md](../phase2-compiler/README.md)** - Detailed planning
+- **[docs/implementation/COMPILER_INFRASTRUCTURE.md](implementation/COMPILER_INFRASTRUCTURE.md)** - Technical design
+- **[docs/implementation/IMPLEMENTATION_CHECKLIST.md](implementation/IMPLEMENTATION_CHECKLIST.md)** - Task breakdown
 
 ---
 
