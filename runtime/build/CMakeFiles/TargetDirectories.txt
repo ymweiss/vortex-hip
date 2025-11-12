@@ -1,0 +1,15 @@
+/home/yaakov/vortex_hip/runtime/build/CMakeFiles/vortex_hip.dir
+/home/yaakov/vortex_hip/runtime/build/CMakeFiles/edit_cache.dir
+/home/yaakov/vortex_hip/runtime/build/CMakeFiles/rebuild_cache.dir
+/home/yaakov/vortex_hip/runtime/build/CMakeFiles/list_install_components.dir
+/home/yaakov/vortex_hip/runtime/build/CMakeFiles/install.dir
+/home/yaakov/vortex_hip/runtime/build/CMakeFiles/install/local.dir
+/home/yaakov/vortex_hip/runtime/build/CMakeFiles/install/strip.dir
+/home/yaakov/vortex_hip/runtime/build/examples/CMakeFiles/vector_add.dir
+/home/yaakov/vortex_hip/runtime/build/examples/CMakeFiles/test_marshaling.dir
+/home/yaakov/vortex_hip/runtime/build/examples/CMakeFiles/edit_cache.dir
+/home/yaakov/vortex_hip/runtime/build/examples/CMakeFiles/rebuild_cache.dir
+/home/yaakov/vortex_hip/runtime/build/examples/CMakeFiles/list_install_components.dir
+/home/yaakov/vortex_hip/runtime/build/examples/CMakeFiles/install.dir
+/home/yaakov/vortex_hip/runtime/build/examples/CMakeFiles/install/local.dir
+/home/yaakov/vortex_hip/runtime/build/examples/CMakeFiles/install/strip.dir

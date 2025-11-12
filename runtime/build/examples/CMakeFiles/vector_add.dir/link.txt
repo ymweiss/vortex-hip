@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/vector_add.dir/vector_add.cpp.o -o vector_add  -Wl,-rpath,/home/yaakov/vortex_hip/runtime/build: ../libhip_vortex.so.1.0.0 

@@ -1,0 +1,1 @@
+/usr/bin/c++ -fPIC -O3 -DNDEBUG -shared -Wl,-soname,libhip_vortex.so.1 -o libhip_vortex.so.1.0.0 CMakeFiles/vortex_hip.dir/src/vortex_hip_runtime.cpp.o   -L/home/yaakov/vortex/build/runtime  -Wl,-rpath,/home/yaakov/vortex/build/runtime: -lvortex 

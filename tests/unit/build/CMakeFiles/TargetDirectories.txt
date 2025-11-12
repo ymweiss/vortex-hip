@@ -1,0 +1,7 @@
+/home/yaakov/vortex_hip/tests/unit/build/CMakeFiles/test_metadata_structure.dir
+/home/yaakov/vortex_hip/tests/unit/build/CMakeFiles/test_argument_layout.dir
+/home/yaakov/vortex_hip/tests/unit/build/CMakeFiles/test_type_sizes.dir
+/home/yaakov/vortex_hip/tests/unit/build/CMakeFiles/run_unit_tests.dir
+/home/yaakov/vortex_hip/tests/unit/build/CMakeFiles/test.dir
+/home/yaakov/vortex_hip/tests/unit/build/CMakeFiles/edit_cache.dir
+/home/yaakov/vortex_hip/tests/unit/build/CMakeFiles/rebuild_cache.dir
