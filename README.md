@@ -1,252 +1,92 @@
-# HIP Implementation for Vortex GPU
+# HIP-to-Vortex Compilation Pipeline
+
+**Goal:** Enable HIP (Heterogeneous-compute Interface for Portability) applications to run on Vortex RISC-V GPU hardware through an automated compilation pipeline.
+
+**Status:** Phase 1 (Metadata Generation) complete, Phase 2 (Compiler Integration) in progress using Polygeist
+
+---
+
+## Quick Start
+
+**Current Phase:** Building and validating Polygeist for C++/HIP → SCF conversion
+
+See: **[docs/phase2-polygeist/STATUS.md](docs/phase2-polygeist/STATUS.md)** for complete current status
+
+---
 
 ## Project Overview
 
-This repository contains documentation and analysis for implementing HIP (Heterogeneous-computing Interface for Portability) support on the **Vortex RISC-V GPU**.
+### What is This Project?
 
-**IMPORTANT DISCOVERY:** Vortex **already has OpenCL 1.2 support** via POCL, and chipStar **already has an OpenCL backend**. This enables a **hybrid approach**:
+This project implements a **compiler pipeline** that takes standard HIP/CUDA code and compiles it to run on Vortex RISC-V GPU hardware. The pipeline uses:
 
-1. **Base Layer (Week 1):** Use chipStar + OpenCL for standard HIP (90% coverage, minimal work)
-2. **Extension Layer (Week 2-3):** Add Vortex-specific intrinsics (warp shuffles, voting, etc.)
-3. **Optional Direct Backend (Week 4+):** Bypass OpenCL for maximum performance if needed
+1. **Polygeist** - Official LLVM tool for C++ → MLIR SCF conversion
+2. **MLIR passes** - Standard MLIR transformations (SCF → GPU dialect)
+3. **Custom pass** - GPU → Vortex mapping (to be implemented)
+4. **llvm-vortex** - RISC-V code generation
 
-### Goal
+### Architecture
 
-Enable standard HIP/CUDA applications on Vortex with optional access to Vortex-specific optimizations through a tiered approach.
-
-## Quick Start: HIP on Vortex
-
-### Prerequisites
-
-**Note:** Throughout this guide, configure the following environment variables for your specific installation:
-- `VORTEX_ROOT` - Path to your Vortex installation
-- `HIP_INSTALL` - Path to your chipStar/HIP installation
-
-```bash
-# 1. Vortex built with OpenCL support
-cd ${VORTEX_ROOT}/build
-source ./ci/toolchain_env.sh
-
-# 2. chipStar built with OpenCL backend
-cd /path/to/chipStar
-mkdir build && cd build
-cmake .. -DCHIP_BUILD_OPENCL=ON -DCMAKE_INSTALL_PREFIX=${HIP_INSTALL}
-make -j$(nproc)
-make install
+```
+HIP/CUDA Source Code (.cpp, .cu)
+    ↓
+[Polygeist] C++ → MLIR SCF Dialect
+    ↓
+[MLIR Passes] SCF → GPU Dialect
+    ↓
+[Custom Pass] GPU → LLVM with Vortex calls
+    ↓
+[mlir-translate] MLIR → LLVM IR
+    ↓
+[llvm-vortex] LLVM IR → Vortex RISC-V Assembly
+    ↓
+Vortex Binary
 ```
 
-### Run HIP Program
-```bash
-# Set environment variables (configure paths for your installation)
-export VORTEX_ROOT=/path/to/vortex
-export HIP_INSTALL=/path/to/hip/install
-
-# Point chipStar to Vortex's OpenCL
-export OCL_ICD_VENDORS=${VORTEX_ROOT}/runtime/pocl/vendors
-
-# Compile HIP program
-# IMPORTANT: HIP programs must be linked to TWO runtime libraries:
-#   1. Vortex runtime library (${VORTEX_ROOT}/stub/libvortex.so)
-#   2. HIP runtime library (${HIP_INSTALL}/lib/libCHIP.so)
-${HIP_INSTALL}/bin/hipcc vector_add.hip \
-    -L${VORTEX_ROOT}/stub -lvortex \
-    -o vector_add
-
-# Run
-./vector_add
-```
-
-**That's it!** HIP programs now run on Vortex through chipStar → OpenCL → POCL → Vortex.
+**Key Insight:** No LLVM version conflicts - Polygeist (LLVM 18) and llvm-vortex (LLVM 10) never interact directly. Handoff is via standard LLVM IR.
 
 ---
 
-## Compilation and Linking Details
+## Current Status
 
-### Required Libraries
+### ✅ Phase 1: Metadata Generation (Complete)
 
-HIP programs on Vortex require linking to **TWO runtime libraries**:
+**Achievement:** Automatic extraction of kernel argument metadata from compiled binaries
 
-1. **Vortex Runtime Library** (`libvortex.so`)
-   - Location: `${VORTEX_ROOT}/stub/`
-   - Purpose: GPU driver and hardware access
-   - Provides: `vx_dev_open()`, `vx_mem_alloc()`, `vx_start()`, etc.
+- Python-based metadata generator using DWARF debug information
+- Tested with reference HIP kernels
+- Generates correct argument offsets, sizes, and pointer flags
+- See: `phase1-metadata/` and `docs/PHASE1_COMPLETE.md`
 
-2. **HIP Runtime Library** (`libCHIP.so`)
-   - Location: `${HIP_INSTALL}/lib/`
-   - Purpose: HIP API implementation
-   - Provides: `hipMalloc()`, `hipMemcpy()`, `hipLaunchKernel()`, etc.
+### 🔄 Phase 2: Compiler Integration (In Progress - Using Polygeist)
 
-### Complete Example
+**Current Work:** Building and validating Polygeist for HIP → SCF conversion
 
-```cpp
-// vector_add.hip
-#include <hip/hip_runtime.h>
-#include <stdio.h>
+**Completed:**
+- ✅ Polygeist built successfully (202MB binary, LLVM 18, optimized)
+- ✅ C++ → SCF validation complete (5/5 tests passed)
+- ✅ MLIR GPU infrastructure verified available
+- ✅ HIP support investigated (47 source references found, 80% likely works as-is)
+- ✅ Architecture validated (no version conflicts)
 
-__global__ void vectorAdd(float* a, float* b, float* c, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        c[i] = a[i] + b[i];
-    }
-}
+**Current Documentation:**
+- **[docs/phase2-polygeist/STATUS.md](docs/phase2-polygeist/STATUS.md)** - Complete current status
+- **[docs/phase2-polygeist/hip_minimal.h](docs/phase2-polygeist/hip_minimal.h)** - Minimal HIP header for testing
+- **[docs/phase2-polygeist/investigation/HIP_SUPPORT_INVESTIGATION.md](docs/phase2-polygeist/investigation/HIP_SUPPORT_INVESTIGATION.md)** - HIP support analysis
 
-int main() {
-    const int N = 1024;
-    const int size = N * sizeof(float);
+**Next Steps:**
+- **Phase 2A** (2 hours) - Quick test: HIP kernel with `--cuda-lower` flag
+- **Phase 2B** (2-3 weeks) - Implement GPUToVortexLLVM pass (~500 lines)
+- **Phase 2C** (1 week) - Integrate metadata extraction with compiler
 
-    // Allocate host memory
-    float *h_a = new float[N];
-    float *h_b = new float[N];
-    float *h_c = new float[N];
+### ⏳ Phase 3: Runtime Library (Planned)
 
-    // Initialize
-    for (int i = 0; i < N; i++) {
-        h_a[i] = i;
-        h_b[i] = i * 2;
-    }
+**Goal:** HIP runtime library mapping HIP API calls to Vortex runtime
 
-    // Allocate device memory
-    float *d_a, *d_b, *d_c;
-    hipMalloc(&d_a, size);
-    hipMalloc(&d_b, size);
-    hipMalloc(&d_c, size);
-
-    // Copy to device
-    hipMemcpy(d_a, h_a, size, hipMemcpyHostToDevice);
-    hipMemcpy(d_b, h_b, size, hipMemcpyHostToDevice);
-
-    // Launch kernel
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
-    hipLaunchKernelGGL(vectorAdd, dim3(blocksPerGrid), dim3(threadsPerBlock),
-                       0, 0, d_a, d_b, d_c, N);
-
-    // Copy result back
-    hipMemcpy(h_c, d_c, size, hipMemcpyDeviceToHost);
-    hipDeviceSynchronize();
-
-    // Verify
-    bool success = true;
-    for (int i = 0; i < N; i++) {
-        if (h_c[i] != h_a[i] + h_b[i]) {
-            printf("Error at index %d: %f != %f\n", i, h_c[i], h_a[i] + h_b[i]);
-            success = false;
-            break;
-        }
-    }
-
-    printf("%s\n", success ? "PASSED" : "FAILED");
-
-    // Cleanup
-    delete[] h_a;
-    delete[] h_b;
-    delete[] h_c;
-    hipFree(d_a);
-    hipFree(d_b);
-    hipFree(d_c);
-
-    return success ? 0 : 1;
-}
-```
-
-### Compilation Steps
-
-```bash
-# Step 1: Set environment (configure paths for your installation)
-export VORTEX_ROOT=/path/to/vortex
-export HIP_INSTALL=/path/to/hip/install
-export OCL_ICD_VENDORS=${VORTEX_ROOT}/runtime/pocl/vendors
-export PATH=${HIP_INSTALL}/bin:$PATH
-
-# Step 2: Compile with hipcc (automatic linking)
-# The hipcc wrapper handles most of the compilation, but we need to
-# explicitly link to the Vortex runtime library
-hipcc vector_add.hip \
-    -L${VORTEX_ROOT}/stub -lvortex \
-    -o vector_add
-
-# Step 3: Run
-./vector_add
-```
-
-### Manual Compilation (Alternative)
-
-If you need more control, you can compile manually:
-
-```bash
-# Compile host code
-clang++ -c vector_add.hip \
-    -I${HIP_INSTALL}/include \
-    -D__HIP_PLATFORM_SPIRV__ \
-    -o vector_add.o
-
-# Compile device code (handled by hipcc internally)
-# This step involves: HIP → LLVM IR → SPIR-V → embedded in object file
-
-# Link with both runtime libraries
-clang++ vector_add.o \
-    -L${VORTEX_ROOT}/stub -lvortex \
-    -L${HIP_INSTALL}/lib -lCHIP \
-    -Wl,-rpath,${VORTEX_ROOT}/stub:${HIP_INSTALL}/lib \
-    -o vector_add
-```
-
-### Troubleshooting
-
-**Error: `libvortex.so: cannot open shared object file`**
-```bash
-# Add to LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=${VORTEX_ROOT}/stub:${HIP_INSTALL}/lib:$LD_LIBRARY_PATH
-```
-
-**Error: `libCHIP.so: cannot open shared object file`**
-```bash
-# Ensure HIP installation is correct
-ls ${HIP_INSTALL}/lib/libCHIP.so
-# If missing, rebuild chipStar
-```
-
-**Error: `No OpenCL platforms found`**
-```bash
-# Ensure Vortex OpenCL is configured
-export OCL_ICD_VENDORS=${VORTEX_ROOT}/runtime/pocl/vendors
-# Verify
-clinfo
-```
-
----
-
-## Documentation Overview
-
-### Start Here (Implementation)
-1. **[docs/reference/VORTEX-ARCHITECTURE.md](docs/reference/VORTEX-ARCHITECTURE.md)** - Vortex GPU capabilities and runtime API
-2. **[docs/implementation/HYBRID-APPROACH.md](docs/implementation/HYBRID-APPROACH.md)** - **Recommended implementation strategy**
-   - Tier 1: OpenCL base (1 week)
-   - Tier 2: Vortex extensions (2 weeks)
-   - Tier 3: Direct backend (optional)
-
-### Reference Analysis (Background)
-3. **[docs/analysis/CHIPSTAR-RUNTIME-ANALYSIS.md](docs/analysis/CHIPSTAR-RUNTIME-ANALYSIS.md)** - How chipStar works
-4. **[docs/analysis/HIP-CPU-ARCHITECTURE-ANALYSIS.md](docs/analysis/HIP-CPU-ARCHITECTURE-ANALYSIS.md)** - Minimal HIP reference
-5. **[docs/implementation/IMPLEMENTATION-COMPARISON.md](docs/implementation/IMPLEMENTATION-COMPARISON.md)** - Side-by-side comparisons
-
-### Additional Resources
-6. **[docs/analysis/CHIPSTAR-ARCHITECTURE-ANALYSIS.md](docs/analysis/CHIPSTAR-ARCHITECTURE-ANALYSIS.md)** - Complete chipStar details
-7. **[docs/implementation/VORTEX-HIP-IMPLEMENTATION-GUIDE.md](docs/implementation/VORTEX-HIP-IMPLEMENTATION-GUIDE.md)** - ~~Custom implementation~~ (Superseded by hybrid approach)
-
-## Referenced Projects
-
-This documentation references the following external projects (not included in this repository):
-
-1. **Vortex** - RISC-V GPU with **existing OpenCL 1.2 support**
-   - Runtime API: `vx_dev_open`, `vx_mem_alloc`, `vx_start`, etc.
-   - Kernel API: `threadIdx`, `blockIdx`, `__syncthreads()`, `__local_mem()`
-   - Intrinsics: warp voting, shuffles, thread control
-2. **chipStar** - Complete HIP runtime with OpenCL backend (use as-is!)
-3. **HIP-CPU** - CPU-only HIP (reference for API understanding)
-4. **hip** - Official HIP headers
-
-These projects should be cloned separately and are analyzed in the documentation files.
+- Device management (hipGetDeviceCount, hipSetDevice, etc.)
+- Memory management (hipMalloc, hipMemcpy, hipFree)
+- Kernel execution (hipLaunchKernel, hipDeviceSynchronize)
+- See planning in: `phase3-runtime/`
 
 ---
 
@@ -254,474 +94,313 @@ These projects should be cloned separately and are analyzed in the documentation
 
 ```
 vortex_hip/
-├── .gitignore                         # Excludes external project directories
 ├── README.md                          # This file
-├── CONTRIBUTING.md                    # Commit and documentation guidelines
+├── INDEX.md                           # Navigation guide
+├── CONTRIBUTING.md                    # Git and documentation guidelines
 │
-└── docs/
-    ├── SUMMARY.md                     # Project summary
-    │
-    ├── analysis/                      # Analysis of existing implementations
-    │   ├── CHIPSTAR-ARCHITECTURE-ANALYSIS.md
-    │   ├── CHIPSTAR-RUNTIME-ANALYSIS.md
-    │   ├── CHIPSTAR-LOWERING-ANALYSIS.md
-    │   ├── HIP-CPU-ARCHITECTURE-ANALYSIS.md
-    │   └── chipstar_analysis.md
-    │
-    ├── implementation/                # Implementation guides and strategies
-    │   ├── HYBRID-APPROACH.md         # Recommended implementation strategy
-    │   ├── VORTEX-HIP-IMPLEMENTATION-GUIDE.md
-    │   └── IMPLEMENTATION-COMPARISON.md
-    │
-    └── reference/                     # Reference documentation
-        └── VORTEX-ARCHITECTURE.md     # Vortex GPU capabilities and runtime
+├── docs/phase2-polygeist/             # Polygeist documentation
+│   ├── STATUS.md                      # ⭐ Current status
+│   ├── BUILD_OPTIONS.md               # Build configuration analysis
+│   ├── hip_minimal.h                  # Minimal HIP header
+│   ├── HIP_SUPPORT_INVESTIGATION.md   # HIP support findings
+│   └── investigation/                 # Investigation results
+│
+├── phase1-metadata/                   # Phase 1: Metadata extraction ✅
+│   ├── hip_metadata_gen.py            # Python metadata generator
+│   ├── test_kernels/                  # Reference test kernels
+│   └── results/                       # Validation results
+│
+├── phase2-compiler/                   # Phase 2: Compiler integration 🔄
+│   └── [To be created: GPUToVortexLLVM pass]
+│
+├── phase3-runtime/                    # Phase 3: Runtime library ⏳
+│   └── [Planned implementation]
+│
+├── docs/
+│   ├── PHASES_OVERVIEW.md             # Phase breakdown
+│   ├── PHASE1_COMPLETE.md             # Phase 1 summary
+│   ├── implementation/                # Implementation guides
+│   │   ├── HIP-TO-VORTEX-API-MAPPING.md
+│   │   ├── COMPILER_INFRASTRUCTURE.md
+│   │   ├── COMPILER_METADATA_GENERATION.md
+│   │   └── ...
+│   └── reference/                     # Architecture documentation
+│       └── VORTEX-ARCHITECTURE.md
+│
+├── vortex/                            # Vortex GPU (git submodule)
+└── llvm-vortex/                       # LLVM with Vortex backend (git submodule)
 ```
-
-**Note:** The external projects (chipStar, HIP-CPU, hip) are referenced in the documentation but not included in this repository. Clone them separately as needed.
 
 ---
 
-## Reference Implementations
+## Key Technical Decisions
 
-### 1. chipStar - SPIR-V Based Runtime
+### Why Polygeist?
 
-**Type:** Full HIP runtime with SPIR-V intermediate representation
+**Problem:** Need to convert C++/HIP code to MLIR SCF dialect
 
-**Key Features:**
-- Uses Clang's native HIP support (no compiler modifications)
-- Compiles HIP/CUDA → LLVM IR → SPIR-V
-- Supports multiple backends (OpenCL, Intel Level Zero)
-- Custom LLVM passes for HIP→SPIR-V translation
-- JIT compilation via backend drivers
+**Options Evaluated:**
+1. Custom LLVM→MLIR pass (complex, error-prone)
+2. Clang plugin (requires extensive Clang knowledge)
+3. **Polygeist** ⭐ (official LLVM tool, production quality)
 
-**Architecture:**
+**Decision:** Use Polygeist
+
+**Rationale:**
+- Official LLVM project (maintained, production-quality)
+- Direct C++ → SCF conversion (skips LLVM IR complexity)
+- Proven performance (2.5x speedup over alternatives)
+- Standard MLIR infrastructure compatibility
+- Minimal custom code needed (only GPU → Vortex pass)
+
+### No LLVM Version Conflicts
+
+**Key Architectural Insight:**
+
 ```
-HIP Application
-      ↓
-Clang Frontend (HIP support built-in)
-      ↓
-LLVM IR (device code)
-      ↓
-chipStar LLVM Passes (HIP transformations)
-      ↓
-SPIRV-LLVM-Translator
-      ↓
-SPIR-V Binary (embedded in fat binary)
-      ↓
-chipStar Runtime (libCHIP.so)
-      ↓
-Backend: OpenCL or Level Zero
-      ↓
-Hardware (GPU)
-```
-
-**Complexity:** ~50,000+ lines of code
-
-**Relevant Analysis:**
-- [docs/analysis/CHIPSTAR-ARCHITECTURE-ANALYSIS.md](docs/analysis/CHIPSTAR-ARCHITECTURE-ANALYSIS.md) - Complete architecture
-- [docs/analysis/CHIPSTAR-RUNTIME-ANALYSIS.md](docs/analysis/CHIPSTAR-RUNTIME-ANALYSIS.md) - Runtime details
-- [docs/analysis/chipstar_analysis.md](docs/analysis/chipstar_analysis.md) - Comprehensive analysis
-
-### 2. HIP-CPU - Header-Only Implementation
-
-**Type:** Pure CPU implementation (no GPU required)
-
-**Key Features:**
-- Header-only C++ library (~2,000 lines)
-- Requires only C++17 standard library
-- Uses `std::execution::par_unseq` for parallelism
-- Cooperative multitasking for barriers (fibers)
-- Unified memory model (all pointers are CPU pointers)
-
-**Architecture:**
-```
-HIP Application
-      ↓
-#include <hip/hip_runtime.h>
-      ↓
-Inline C++ Implementation:
-  - hipMalloc → malloc()
-  - hipMemcpy → memcpy()
-  - kernel<<<>>> → std::for_each(par_unseq)
-  - __syncthreads() → fiber context switch
-      ↓
-C++17 Parallel Algorithms
-      ↓
-CPU threads (8-16 worker threads)
+Polygeist Ecosystem (LLVM 18)          Vortex Ecosystem (LLVM 10)
+        ↓                                       ↓
+  C++ → SCF → GPU → LLVM Dialect          LLVM IR → RISC-V
+        ↓                                       ↑
+        └───────── LLVM IR (.ll) ──────────────┘
+                   (version-independent)
 ```
 
-**Complexity:** ~2,000 lines of code
+- Polygeist brings its own LLVM 18 (self-contained)
+- llvm-vortex uses LLVM 10 (independent)
+- Handoff is standard LLVM IR (version-independent)
+- **No conflicts, no compatibility issues**
 
-**Thread Mapping:**
-- HIP Threads: 1,000,000
-- OS Threads: 9-17
-- Ratio: ~65,000:1
+### No Custom Vortex MLIR Dialect Needed
 
-**Relevant Analysis:**
-- [docs/analysis/HIP-CPU-ARCHITECTURE-ANALYSIS.md](docs/analysis/HIP-CPU-ARCHITECTURE-ANALYSIS.md) - Complete implementation details
+**Discovery:** Vortex uses inline assembly for runtime operations, not LLVM intrinsics
 
-### 3. Official HIP Headers
+**Implication:** Can emit standard LLVM function calls instead of custom dialect operations
 
-**Type:** API definitions only
+```mlir
+gpu.thread_id x  →  call @vx_thread_id()  (standard LLVM)
+gpu.block_id x   →  compute from vx_warp_id()
+gpu.barrier      →  call @vx_barrier()
+```
 
-**Purpose:** Standard HIP API declarations used by all implementations
+**Benefit:** Saves ~2000 lines of custom dialect code
 
 ---
 
-## Implementation Comparison
+## Implementation Phases
 
-| Aspect | chipStar | HIP-CPU | Target: Vortex |
-|--------|----------|---------|----------------|
-| **Target** | SPIR-V GPUs | CPU cores | Vortex RISC-V GPU |
-| **Compilation** | Clang → SPIR-V | Direct C++ | Clang → ? |
-| **IR Format** | SPIR-V | None (header-only) | TBD (SPIR-V or custom?) |
-| **Backend** | OpenCL/Level0 | C++17 stdlib | Vortex driver/runtime |
-| **Memory Model** | Host ≠ Device | Unified (CPU RAM) | Host ≠ Device |
-| **LOC** | ~50,000+ | ~2,000 | TBD |
-| **Barriers** | Hardware | O(n) fibers | Hardware (expected) |
-| **JIT Compilation** | Yes (driver) | No | TBD |
-| **Performance** | Native GPU | 10-100x slower | Native GPU (goal) |
+### Phase 1: Metadata Generation ✅ COMPLETE
 
----
+**Duration:** 2 weeks
+**Status:** Complete and tested
 
-## Key Technical Decisions for Vortex
+**Deliverables:**
+- Python-based DWARF parser
+- Automatic argument offset calculation
+- Metadata generation for kernel registration
+- Validation with reference kernels
 
-### 1. Intermediate Representation
+**Key Files:**
+- `phase1-metadata/hip_metadata_gen.py`
+- `docs/PHASE1_COMPLETE.md`
 
-**Option A: SPIR-V (chipStar approach)**
+### Phase 2: Compiler Integration 🔄 IN PROGRESS
 
-Pros:
-- Leverage existing Clang HIP support
-- Reuse chipStar's LLVM passes
-- Standard IR with rich tooling
-- Backend-agnostic
+**Duration:** 4-5 weeks (estimated)
+**Status:** Building Polygeist infrastructure
 
-Cons:
-- Requires SPIR-V support in Vortex
-- Complex runtime (SPIR-V parsing/JIT)
-- May not map perfectly to RISC-V ISA
+#### Phase 2A: HIP Syntax Testing (2 hours)
+- Test HIP kernel with `--cuda-lower` flag
+- Verify HIP built-ins work with Polygeist
+- Document findings
 
-**Option B: Custom IR / Direct RISC-V**
+#### Phase 2B: GPUToVortexLLVM Pass (2-3 weeks)
+- Implement custom MLIR pass (~500 lines)
+- Map GPU dialect operations to Vortex runtime calls
+- `gpu.thread_id` → `call @vx_thread_id()`
+- `gpu.block_id` → compute from warp/thread IDs
+- `gpu.barrier` → `call @vx_barrier()`
 
-Pros:
-- Optimal code generation for RISC-V
-- No translation overhead
-- Full control over compilation
+#### Phase 2C: Metadata Integration (1 week)
+- Extract metadata from MLIR function signatures
+- Integrate with Phase 1 metadata generator
+- Generate kernel registration code
 
-Cons:
-- Requires custom compiler modifications
-- More implementation work
-- Less tooling support
+**Key Files:**
+- `docs/phase2-polygeist/STATUS.md` - Current status
+- `phase2-compiler/` - Implementation directory (to be created)
 
-### 2. Memory Management
+### Phase 3: Runtime Library ⏳ PLANNED
 
-chipStar uses:
-- Separate host and device allocations
-- Explicit transfers via DMA-like mechanisms
-- OpenCL/Level0 memory APIs
+**Duration:** 3-4 weeks (estimated)
+**Status:** Planned, not started
 
-Vortex should consider:
-- **Unified virtual addressing** (simplifies pointer handling)
-- **Explicit copy APIs** (hipMemcpy) for data movement
-- **Cache coherency model** (depending on hardware)
+**Scope:**
+- Host-side HIP API implementation
+- Memory management (malloc, memcpy, free)
+- Device management (get device count, set device)
+- Kernel execution (launch, synchronize)
+- Error handling
 
-### 3. Kernel Launch Mechanism
-
-chipStar:
-```cpp
-hipLaunchKernel(func, grid, block, args, shared, stream)
-  → Find compiled kernel
-  → Setup arguments (marshal to backend)
-  → Backend launch (OpenCL: clEnqueueNDRangeKernel)
-  → Hardware execution
-```
-
-Vortex needs:
-- Kernel registration mechanism
-- Argument marshalling
-- Grid/block to hardware mapping
-- Stream/queue management
-
-### 4. Runtime Architecture
-
-Required components:
-1. **Device Management** - Detect and initialize Vortex GPU
-2. **Memory Manager** - Allocate, free, copy device memory
-3. **Module Loader** - Load compiled kernels
-4. **Kernel Registry** - Map host pointers to device functions
-5. **Launch Manager** - Submit kernels with arguments
-6. **Stream/Event System** - Asynchronous execution
-7. **Error Handling** - hipError_t codes
+**Key Files:**
+- `phase3-runtime/` - Implementation directory
 
 ---
 
-## Implementation Strategy for Vortex
+## Quick Links
 
-### Phase 1: Minimal Runtime (Core APIs)
+### Getting Started
+1. **[docs/phase2-polygeist/STATUS.md](docs/phase2-polygeist/STATUS.md)** - Current work and status
+2. **[INDEX.md](INDEX.md)** - Full navigation guide
+3. **[docs/PHASES_OVERVIEW.md](docs/PHASES_OVERVIEW.md)** - Detailed phase breakdown
 
-Implement essential HIP APIs:
-```cpp
-// Device management
-hipGetDeviceCount()
-hipSetDevice()
-hipGetDeviceProperties()
+### Implementation Guides
+- **[docs/implementation/HIP-TO-VORTEX-API-MAPPING.md](docs/implementation/HIP-TO-VORTEX-API-MAPPING.md)** - API mapping reference
+- **[docs/implementation/COMPILER_INFRASTRUCTURE.md](docs/implementation/COMPILER_INFRASTRUCTURE.md)** - Compiler architecture
+- **[docs/reference/VORTEX-ARCHITECTURE.md](docs/reference/VORTEX-ARCHITECTURE.md)** - Vortex GPU capabilities
 
-// Memory management
-hipMalloc()
-hipFree()
-hipMemcpy()
-hipMemcpyAsync()
-
-// Kernel launch
-hipLaunchKernel()
-hipDeviceSynchronize()
-```
-
-### Phase 2: Compilation Pipeline
-
-Choose one of:
-
-**A. Adapt chipStar for Vortex:**
-```
-Clang HIP frontend
-      ↓
-LLVM IR
-      ↓
-chipStar LLVM passes (reuse)
-      ↓
-SPIRV-LLVM-Translator
-      ↓
-SPIR-V → Vortex ISA translator (NEW)
-      ↓
-Vortex binary
-```
-
-**B. Custom Vortex backend:**
-```
-Clang HIP frontend
-      ↓
-LLVM IR
-      ↓
-Custom LLVM passes for Vortex
-      ↓
-LLVM RISC-V backend (with Vortex extensions)
-      ↓
-Vortex binary
-```
-
-### Phase 3: Advanced Features
-
-- Streams and events
-- Shared memory
-- Atomic operations
-- Texture support (if applicable)
-- Multi-GPU support
-
-### Phase 4: Optimization
-
-- Kernel caching
-- Fast argument setup
-- DMA optimization
-- Compute unit scheduling
+### Phase Documentation
+- **[docs/PHASE1_COMPLETE.md](docs/PHASE1_COMPLETE.md)** - Phase 1 completion report
+- **[phase1-metadata/](phase1-metadata/)** - Phase 1 implementation
+- **[docs/phase2-polygeist/](docs/phase2-polygeist/)** - Phase 2 current work
 
 ---
 
-## Lessons from Reference Implementations
+## External Dependencies
 
-### From chipStar
+### Git Submodules
 
-1. **Lazy JIT Compilation** - Defer compilation until first kernel launch
-2. **Metadata-Driven Execution** - Extract argument types from IR
-3. **Backend Abstraction** - Common interface for different execution engines
-4. **Fat Binary Format** - Embed device code in host executable
-5. **Registration Pattern** - Compiler-generated stubs register kernels
+1. **Vortex** - RISC-V GPU hardware
+   - Repository: https://github.com/vortexgpgpu/vortex
+   - Branch: master
+   - Purpose: Target hardware platform
 
-### From HIP-CPU
+2. **llvm-vortex** - LLVM with Vortex backend
+   - Repository: https://github.com/vortexgpgpu/llvm
+   - Version: LLVM 10 (custom fork)
+   - Purpose: Final RISC-V code generation
 
-1. **Unified Memory Simplicity** - Host = Device pointers (if possible)
-2. **Minimal Thread Creation** - Reuse thread pools across launches
-3. **Two-Mode Execution** - Fast path (no barriers) vs slow path (with barriers)
-4. **Barrier Cost** - Hardware barriers are critical for performance
-5. **Shared Memory** - Must be truly shared, not thread-local
+3. **Polygeist** - C++ to MLIR translator
+   - Repository: https://github.com/ymweiss/Polygeist (fork)
+   - Upstream: https://github.com/llvm/Polygeist (official)
+   - Version: LLVM 18
+   - Purpose: C++/HIP → SCF conversion
 
-### Common Patterns
-
-Both implementations:
-- Use SPVRegister-style kernel registry
-- Implement hipError_t error codes
-- Support asynchronous operations (streams)
-- Marshal arguments based on metadata
-- Handle kernel launch triple-chevron syntax
-
----
-
-## Key Files to Study
-
-### chipStar Runtime
-
-| File | Purpose | Lines |
-|------|---------|-------|
-| `chipStar/src/CHIPBackend.hh` | Backend abstraction | ~1,200 |
-| `chipStar/src/backend/OpenCL/CHIPBackendOpenCL.cc` | OpenCL implementation | ~3,000 |
-| `chipStar/src/SPVRegister.cc` | Module/kernel registry | ~300 |
-| `chipStar/src/spirv.cc` | SPIR-V parser | ~4,800 |
-| `chipStar/src/CHIPBindings.cc` | Public HIP API | ~6,000 |
-
-### chipStar LLVM Passes
-
-| Pass | Purpose |
-|------|---------|
-| `HipTextureLowering.cpp` | Convert texture ops → image ops |
-| `HipKernelArgSpiller.cpp` | Handle large arguments |
-| `HipDynMem.cpp` | Dynamic shared memory |
-| `HipGlobalVariables.cpp` | Device global variables |
-| `HipAbort.cpp` | Device-side assertions |
-
-### HIP-CPU Runtime
-
-| File | Purpose |
-|------|---------|
-| `HIP-CPU/include/hip/hip_runtime.h` | Public API |
-| `HIP-CPU/src/include/hip/detail/grid_launch.hpp` | Kernel launch |
-| `HIP-CPU/src/include/hip/detail/tile.hpp` | Block execution |
-| `HIP-CPU/src/include/hip/detail/fiber.hpp` | Barrier implementation |
-| `HIP-CPU/src/include/hip/detail/api.hpp` | Memory/device APIs |
-
----
-
-## Next Steps for Vortex Implementation
-
-### 1. Define Requirements
-
-- [ ] Vortex ISA specification
-- [ ] Memory architecture (unified? discrete?)
-- [ ] Hardware features (barriers, atomics, shared memory)
-- [ ] Driver interface (system calls, MMIO, DMA)
-- [ ] Performance targets
-
-### 2. Choose Architecture
-
-- [ ] SPIR-V based (adapt chipStar) or custom?
-- [ ] Backend design (OpenCL-like? Custom?)
-- [ ] Memory model (unified addressing?)
-- [ ] Compilation flow (JIT? AOT? Hybrid?)
-
-### 3. Implement Core Runtime
-
-- [ ] Device initialization
-- [ ] Memory allocation/free
-- [ ] Kernel loading
-- [ ] Launch mechanism
-- [ ] Synchronization primitives
-
-### 4. Develop Compiler Support
-
-- [ ] LLVM backend for Vortex (if not exists)
-- [ ] HIP-specific transformations
-- [ ] Bitcode device library
-- [ ] Kernel metadata generation
-
-### 5. Testing and Validation
-
-- [ ] Unit tests (API correctness)
-- [ ] Integration tests (simple kernels)
-- [ ] Performance benchmarks
-- [ ] Compatibility suite (HIP tests)
-
----
-
-## Building Reference Implementations
-
-### chipStar
-
+**Setup:**
 ```bash
-cd chipStar
-mkdir build && cd build
-cmake .. \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCHIP_BUILD_OPENCL=ON
-make -j$(nproc)
+git clone --recursive https://github.com/YOUR_USERNAME/vortex_hip.git
+# Or if already cloned:
+git submodule update --init --recursive
 ```
 
-### HIP-CPU
+---
 
-Header-only - no build required. Just include:
-```cpp
-#include <hip/hip_runtime.h>
+## Development Workflow
+
+### Current Phase 2 Workflow
+
+1. **Polygeist is built** at `/home/yaakov/vortex_hip/docs/phase2-polygeist/build/bin/cgeist`
+2. **Test HIP kernels** using `hip_minimal.h` header
+3. **Implement GPUToVortexLLVM pass** in `phase2-compiler/`
+4. **Integrate with metadata generation** from Phase 1
+
+### Testing
+
+**Phase 1 Tests:**
+```bash
+cd phase1-metadata
+python hip_metadata_gen.py test_kernels/vecadd.hip
 ```
 
-Requires C++17 compiler with parallel algorithm support.
+**Phase 2 Tests (current):**
+```bash
+cd Polygeist
+./build/bin/cgeist simple.cpp -S -o simple.mlir
+# Verify SCF dialect output
+```
+
+---
+
+## Contributing
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for:
+- Commit message conventions
+- Documentation standards
+- Code style guidelines
+
+---
+
+## Timeline Summary
+
+| Phase | Duration | Status | Key Deliverable |
+|-------|----------|--------|-----------------|
+| **Phase 1** | 2 weeks | ✅ Complete | Metadata generator |
+| **Phase 2A** | 2 hours | 🔄 In Progress | HIP syntax test |
+| **Phase 2B** | 2-3 weeks | ⏳ Pending | GPUToVortexLLVM pass |
+| **Phase 2C** | 1 week | ⏳ Pending | Metadata integration |
+| **Phase 3** | 3-4 weeks | ⏳ Planned | Runtime library |
+| **Total** | ~9-11 weeks | ~20% complete | Working HIP compiler |
 
 ---
 
 ## Resources
 
 ### Documentation
-- [chipStar GitHub](https://github.com/CHIP-SPV/chipStar)
-- [HIP Programming Guide](https://rocm.docs.amd.com/projects/HIP/en/latest/)
-- [SPIR-V Specification](https://www.khronos.org/registry/spir-v/)
-
-### Analysis Documents in This Repo
-- **docs/analysis/CHIPSTAR-ARCHITECTURE-ANALYSIS.md** - Complete chipStar architecture
-- **docs/analysis/CHIPSTAR-RUNTIME-ANALYSIS.md** - Runtime loading and execution
-- **docs/analysis/CHIPSTAR-LOWERING-ANALYSIS.md** - LLVM IR transformations
-- **docs/analysis/HIP-CPU-ARCHITECTURE-ANALYSIS.md** - CPU implementation details
+- [HIP Programming Guide](https://rocm.docs.amd.com/projects/HIP/)
+- [MLIR Documentation](https://mlir.llvm.org/)
+- [Polygeist Paper](https://mlir.llvm.org/OpenMeetings/2021-01-14-Polygeist.pdf)
 
 ### Related Projects
-- [HIPIFY](https://github.com/ROCm-Developer-Tools/HIPIFY) - CUDA to HIP conversion
-- [HIP Examples](https://github.com/ROCm-Developer-Tools/HIP-Examples)
-- [Vortex GPU](https://github.com/vortexgpgpu/vortex) - Target platform
+- [Polygeist GitHub](https://github.com/llvm/Polygeist)
+- [Vortex GPU](https://github.com/vortexgpgpu/vortex)
+- [chipStar](https://github.com/CHIP-SPV/chipStar) - Alternative HIP implementation
 
 ---
 
-## Comparison: chipStar vs Vortex Requirements
+## Frequently Asked Questions
 
-### Memory Bandwidth
-- **chipStar (OpenCL GPU):** 100-1000 GB/s
-- **Vortex (RISC-V):** TBD - likely lower
-- **Impact:** May need different optimization strategies
+### Why not use chipStar?
 
-### Thread Count
-- **chipStar (Modern GPU):** 1,000-10,000 threads
-- **Vortex:** TBD
-- **Impact:** Affects block size recommendations
+chipStar uses SPIR-V as intermediate representation, which would require:
+1. SPIR-V support in Vortex (major effort)
+2. SPIR-V → RISC-V translation layer
+3. OpenCL runtime implementation
 
-### Barrier Performance
-- **chipStar (GPU):** Hardware barriers (essentially free)
-- **HIP-CPU:** O(blockDim) context switches (expensive)
-- **Vortex:** Hardware barriers expected
-- **Impact:** Critical for shared memory patterns
+The Polygeist approach is simpler and more direct.
 
-### Memory Hierarchy
-- **chipStar (GPU):** L1, L2, LDS (shared), global
-- **Vortex:** TBD - RISC-V cache hierarchy
-- **Impact:** Shared memory usage patterns
+### Why not modify Clang directly?
 
----
+Polygeist already provides the C++ → MLIR conversion we need. Building a Clang plugin or modifying Clang would duplicate existing functionality.
 
-## License
+### How does this compare to official AMD HIP?
 
-This repository contains multiple projects with different licenses:
-- **chipStar:** MIT License
-- **HIP-CPU:** MIT License
-- **hip:** MIT License
+This is a **compiler** for Vortex hardware. AMD's HIP is designed for AMD GPUs. We're creating a compatible compiler that targets Vortex RISC-V instead of AMD GCN/CDNA.
 
-See individual LICENSE files in each subdirectory.
+### What HIP features are supported?
 
----
+**Current target (Phase 2):**
+- Basic kernel launches
+- Memory management (malloc, memcpy, free)
+- Thread indexing (threadIdx, blockIdx, blockDim, gridDim)
+- Barriers (__syncthreads)
 
-## Contact and Contributions
-
-For questions about Vortex HIP implementation, please contact the Vortex team.
-
-To study the reference implementations:
-1. Read the analysis documents
-2. Explore the source code
-3. Build and run examples
-4. Compare architectural approaches
+**Future (Phase 3+):**
+- Shared memory
+- Atomic operations
+- Streams and events
+- Multi-device support
 
 ---
 
-**Last Updated:** 2025-10-29
-**Status:** Analysis and planning phase
-**Next Milestone:** Define Vortex HIP architecture
+## Contact and Support
+
+For questions about this project, please:
+1. Check existing documentation in `docs/`
+2. Review phase-specific documentation
+3. See implementation guides in `docs/implementation/`
+
+---
+
+**Last Updated:** November 10, 2025
+**Current Phase:** Phase 2 (Compiler Integration using Polygeist)
+**Status:** Polygeist built and validated, ready for GPUToVortexLLVM pass implementation
