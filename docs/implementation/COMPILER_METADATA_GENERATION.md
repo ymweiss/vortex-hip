@@ -405,7 +405,7 @@ __global__ void structured(Vec3 v, int n) { }
 ## Files to Create/Modify
 
 ### New Files
-1. **`vortex/scripts/hip_metadata_gen.py`** - Python extractor
+1. **`scripts/vortex/hip_metadata_gen.py`** - Python extractor
 2. **`vortex_hip/compiler/README.md`** - Compiler integration guide
 3. **`llvm-vortex/lib/Target/RISCV/HipMetadataGen.cpp`** - LLVM pass (future)
 

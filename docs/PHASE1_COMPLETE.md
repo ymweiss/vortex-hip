@@ -40,7 +40,7 @@ hipGetErrorString()      → Error code mapping
 
 **Purpose:** Extract kernel argument metadata from DWARF debug information
 
-**Implementation:** Python script (`vortex/scripts/hip_metadata_gen.py`)
+**Implementation:** Python script (`scripts/vortex/hip_metadata_gen.py`)
 
 **What it extracts:**
 - Argument count
@@ -291,7 +291,7 @@ Test Coverage:
 ### Technical References
 - **[runtime/include/vortex_hip_runtime.h](../runtime/include/vortex_hip_runtime.h)** - HIP API
 - **[vortex/runtime/include/vortex.h](../vortex/runtime/include/vortex.h)** - Vortex API
-- **[vortex/scripts/hip_metadata_gen.py](../vortex/scripts/hip_metadata_gen.py)** - Metadata generator
+- **[scripts/vortex/hip_metadata_gen.py](../scripts/vortex/hip_metadata_gen.py)** - Metadata generator
 
 ---
 

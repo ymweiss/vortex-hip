@@ -58,7 +58,7 @@ If you have a RISC-V compiler installed:
 riscv64-unknown-elf-gcc -g simple_kernel.cpp -o simple_kernel.elf
 
 # 2. Generate metadata
-python3 $HOME/vortex/scripts/hip_metadata_gen.py simple_kernel.elf > kernel_stub.cpp
+python3 $HOME/scripts/vortex/hip_metadata_gen.py simple_kernel.elf > kernel_stub.cpp
 
 # 3. Inspect generated metadata
 cat kernel_stub.cpp
@@ -87,6 +87,6 @@ After validating Phase 1:
 
 ## Related Documentation
 
-- `$HOME/vortex/scripts/README_metadata_gen.md` - Script documentation
+- `$HOME/scripts/vortex/README_metadata_gen.md` - Script documentation
 - `$HOME/vortex_hip/runtime/ARGUMENT_MARSHALING.md` - Runtime implementation
 - `$HOME/vortex_hip/docs/implementation/COMPILER_METADATA_GENERATION.md` - Full strategy

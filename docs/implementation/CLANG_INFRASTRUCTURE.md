@@ -45,7 +45,7 @@ kernel.cpp (Vortex format)
     │        Output: kernel.elf (RISC-V binary with DWARF)
     │
     ├─> [2] DWARF Metadata Extraction (Python)
-    │        Tool: vortex/scripts/hip_metadata_gen.py
+    │        Tool: scripts/vortex/hip_metadata_gen.py
     │        Input: kernel.elf (reads DWARF debug sections)
     │        Output: kernel_metadata.cpp (registration code)
     │        ⚠️  BUG: Extracts wrong offsets (doesn't skip runtime fields)
@@ -71,7 +71,7 @@ kernel.cpp (Vortex format)
 - **Debug Info:** -g (required for DWARF parsing)
 
 **Metadata Generation:**
-- **Tool:** Python script (`vortex/scripts/hip_metadata_gen.py`)
+- **Tool:** Python script (`scripts/vortex/hip_metadata_gen.py`)
 - **Method:** Parse DWARF debug information from compiled ELF
 - **Input:** kernel.elf with debug symbols
 - **Output:** C++ code with metadata arrays

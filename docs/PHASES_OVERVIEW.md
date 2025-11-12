@@ -24,7 +24,7 @@
 #### 1A. Metadata Generation (✅ Complete)
 **Purpose:** Extract kernel argument metadata from DWARF debug info
 
-- Python script (`vortex/scripts/hip_metadata_gen.py`)
+- Python script (`scripts/vortex/hip_metadata_gen.py`)
 - C++ unit tests (Google Test - 23 tests)
 - Python unit tests (unittest - 17 tests)
 - Converts HIP array-of-pointers → Vortex packed struct

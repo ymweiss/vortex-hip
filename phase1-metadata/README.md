@@ -9,7 +9,7 @@ This phase implements automatic metadata generation for HIP kernel arguments by 
 ## Components
 
 ### Python Script
-- **Location:** Integrated with Vortex at `vortex/scripts/hip_metadata_gen.py`
+- **Location:** Integrated with Vortex at `scripts/vortex/hip_metadata_gen.py`
 - **Purpose:** Extract kernel signatures from ELF files and generate C++ registration code
 - **Input:** Kernel ELF file with DWARF debug info
 - **Output:** C++ file with metadata array and registration function
@@ -77,7 +77,7 @@ Total:                 40/40 passing (100%)
 ### Generate Metadata
 ```bash
 # From kernel ELF with debug info
-python3 vortex/scripts/hip_metadata_gen.py kernel.elf > kernel_metadata.cpp
+python3 scripts/vortex/hip_metadata_gen.py kernel.elf > kernel_metadata.cpp
 ```
 
 ### Build with Metadata
@@ -101,7 +101,7 @@ cd tests/vecadd_metadata_test && ./run.sh
 ## Files
 
 ### Core
-- `vortex/scripts/hip_metadata_gen.py` - Metadata generator
+- `scripts/vortex/hip_metadata_gen.py` - Metadata generator
 - `tests/unit/` - C++ unit tests
 - `tests/metadata_gen/` - Python unit tests
 - `tests/vecadd_metadata_test/` - Integration test

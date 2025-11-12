@@ -60,7 +60,7 @@
 
 **Key Files:**
 - [phase1-metadata/](phase1-metadata/) - Implementation directory
-- [vortex/scripts/hip_metadata_gen.py](vortex/scripts/hip_metadata_gen.py) - Main generator
+- [scripts/vortex/hip_metadata_gen.py](scripts/vortex/hip_metadata_gen.py) - Main generator
 - [docs/PHASE1_COMPLETE.md](docs/PHASE1_COMPLETE.md) - Completion report
 
 **What It Does:**
