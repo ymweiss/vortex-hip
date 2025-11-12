@@ -1,0 +1,5 @@
+=== HIP Kernel to MLIR Pipeline Test ===
+Date: Mon Nov 10 19:24:32 PST 2025
+
+Test 1: Simple HIP Vector Add Kernel
+  Step 1: HIP → MLIR (Polygeist)
