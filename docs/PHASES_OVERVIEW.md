@@ -230,12 +230,10 @@ __global__ void kernel_add(float* a, float* b, float* c, int n) {
 
 **Full Compilation Pipeline:**
 ```
-HIP Source (.cpp)
-    ↓ [Clang Plugin]
-Vortex C++ (.cpp)
-    ↓ [RISC-V Clang]
+HIP Source (.hip)
+    ↓ [Polygeist + MLIR + GPUToVortexLLVM]
 Vortex Binary (.vxbin)
-    ↓ [HIP Runtime]
+    ↓ [Vortex Runtime]
 Execution on Vortex
 ```
 
@@ -252,6 +250,12 @@ Execution on Vortex
 - Constant memory
 - Dynamic parallelism (if feasible)
 
+**Optional: HIP Runtime Binary Compatibility Library**
+- `libhip_vortex.so` - Wraps Vortex API with HIP API calls
+- Purpose: Support pre-compiled host binaries (x86) that were compiled for HIP
+- Limitation: Kernels must still be recompiled from source to Vortex RISC-V
+- Note: No architecture-independent HIP kernel binary format exists
+
 **Production Features:**
 - Error checking and debugging
 - Profiling and metrics
@@ -264,6 +268,7 @@ Execution on Vortex
 ✅ Optimizations improve performance significantly
 ✅ Full HIP API coverage
 ✅ Production-ready quality
+✅ (Optional) Binary compatibility for pre-compiled host code
 
 ---
 
