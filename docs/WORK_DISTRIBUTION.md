@@ -190,20 +190,50 @@ static inline hipError_t hipDeviceSynchronize() {
 5. GPUToVortexLLVM pass handles kernel constructs (`threadIdx`, `blockIdx`, `__syncthreads()`)
 
 **Complete compilation flow:**
+```bash
+# Step 1: Compile HIP source with Polygeist
+cgeist user_code.hip \
+    -I runtime/include \              # Our hip_runtime.h header
+    --cuda-lower \                    # Enable CUDA/HIP kernel lowering
+    -resource-dir $(clang -print-resource-dir) \
+    -S -o user_code.mlir
+
+# Result: MLIR with SCF and GPU dialects
+# - func.call @vx_mem_alloc (from hipMalloc via inline)
+# - gpu.launch_func (from <<<>>>)
+# - gpu.thread_id (from threadIdx in kernel)
+# - scf.for loops (from regular loops)
+
+# Step 2: Lower SCF to GPU dialect (if needed)
+mlir-opt user_code.mlir \
+    --convert-scf-to-cf \             # SCF to control flow
+    --convert-affine-for-to-gpu \     # Affine loops to GPU
+    -o user_code_gpu.mlir
+
+# Step 3: Lower GPU to Vortex LLVM (our custom pass)
+mlir-opt user_code_gpu.mlir \
+    --convert-gpu-to-vortex-llvm \    # Our custom pass
+    -o user_code_llvm.mlir
+
+# Step 4: Convert to LLVM IR
+mlir-translate user_code_llvm.mlir \
+    --mlir-to-llvmir \
+    -o user_code.ll
+
+# Step 5: Compile with llvm-vortex
+llvm-vortex/bin/clang user_code.ll \
+    -target riscv32 \
+    -o kernel.vxbin
 ```
-user_code.hip
-    ↓ [C Preprocessor]
-Expanded source (vx_* calls visible, <<<>>> preserved)
-    ↓ [Polygeist with --cuda-lower]
-MLIR with:
-  - func.call @vx_mem_alloc (host code)
-  - gpu.launch_func (from <<<>>>)
-  - gpu.thread_id (from threadIdx in kernel)
-    ↓ [Standard MLIR passes]
-GPU Dialect
-    ↓ [GPUToVortexLLVM - our custom pass]
-LLVM Dialect with vx_* intrinsics
-```
+
+**Key compilation flags:**
+
+1. **`-I runtime/include`** - Ensures our `hip/hip_runtime.h` is found
+2. **`--cuda-lower`** - Polygeist flag to convert CUDA/HIP kernel syntax to GPU dialect
+3. **`-resource-dir`** - Ensures Clang's builtin headers are available
+4. **`--convert-affine-for-to-gpu`** - Standard MLIR pass for loop parallelization (if needed)
+
+**Note:** Polygeist already supports HIP kernel syntax via its CUDA support - HIP and CUDA use identical kernel syntax (`__global__`, `threadIdx`, `<<<>>>`).
 
 This is exactly how HIP works with ROCm and CUDA - backend-specific headers provide the implementation.
 
@@ -578,12 +608,30 @@ call @vx_ready_wait(device)
 
 ### Week 1: Setup & HIP Testing
 
-**Monday-Tuesday: Phase 2A - HIP Syntax Testing (4 hours, pair programming)**
+**Monday: Create HIP Runtime Header (4 hours, collaborative)**
+- Create `runtime/include/hip/hip_runtime.h`
+- Implement inline functions for HIP API → Vortex API mapping:
+  ```cpp
+  // Essential functions needed for testing
+  static inline hipError_t hipMalloc(void** ptr, size_t size);
+  static inline hipError_t hipFree(void* ptr);
+  static inline hipError_t hipMemcpy(void* dst, const void* src,
+                                      size_t size, hipMemcpyKind kind);
+  static inline hipError_t hipDeviceSynchronize();
+  ```
+- Define HIP types and constants (hipError_t, hipMemcpyKind, etc.)
+- Test header compiles and links with existing Phase 1 runtime
+
+**Tuesday: Phase 2A - HIP Syntax Testing (4 hours, pair programming)**
 - Test HIP kernel compilation with Polygeist
   ```bash
-  cgeist --cuda-lower hip_kernel.hip -S -o hip_kernel.mlir
+  cgeist --cuda-lower hip_kernel.hip \
+      -I runtime/include \
+      -resource-dir $(clang -print-resource-dir) \
+      -S -o hip_kernel.mlir
   ```
 - Verify `--cuda-lower` flag works with HIP syntax
+- Validate our `hip_runtime.h` header is correctly included
 - Validate standard MLIR passes work: `--convert-affine-for-to-gpu`
 - Document findings and required flags
 - Create example test case

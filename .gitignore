@@ -1,7 +1,7 @@
-# Exclude other git repositories
-chipStar/
-hip/
-HIP-CPU/
+# Exclude other git repositories (in root directory)
+/chipStar/
+/hip/
+/HIP-CPU/
 
 # Editor and IDE files
 .vscode/
