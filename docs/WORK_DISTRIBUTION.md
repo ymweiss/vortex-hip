@@ -276,7 +276,7 @@ llvm.call @vx_barrier(%bar_id, %num_threads) : (i32, i32) -> ()
 ## Developer A: Thread Model & Kernel Launch
 
 **Estimated Time:** 2-3 weeks
-**Estimated LOC:** ~250-300 lines + tests
+**Estimated LOC:** ~300-350 lines + tests
 
 ### Responsibilities
 
@@ -403,24 +403,99 @@ call @vx_upload_kernel_bytes(device, kernel_binary, size)
 call @vx_copy_to_dev(device, args_dev_addr, args_struct, args_size)
 
 // 3. Start kernel execution
-call @vx_start(device)
+call @vx_start(device, kernel_buffer, args_buffer)
 
 // 4. Wait for completion
 call @vx_ready_wait(device, timeout)
 ```
 
 **Vortex Host-Side API (for kernel launch):**
-- `vx_upload_kernel_bytes(device, kernel_data, size)` - Upload kernel to device memory
-- `vx_start(device)` - Start kernel execution
+- `vx_upload_kernel_bytes(device, kernel_data, size, &buffer)` - Upload kernel to device memory
+- `vx_upload_bytes(device, data, size, &buffer)` - Upload argument struct to device memory
+- `vx_start(device, kernel_buffer, args_buffer)` - Start kernel execution
 - `vx_ready_wait(device, timeout)` - Wait for kernel completion
-- `vx_copy_to_dev(device, dest, src, size)` - Copy arguments to device
 
 **Implementation Details:**
 - Extract kernel binary reference from `gpu.module`
 - Calculate grid/block dimensions for Vortex (warp/core mapping)
-- Package kernel arguments (coordinate with Developer B on argument structure)
+- **Extract metadata from kernel arguments** (types, sizes, pointer vs value)
+- **Generate argument struct packing code** based on metadata
+- Package kernel arguments into struct (coordinate with Developer B on argument structure)
 - Generate complete launch sequence
 - Handle launch configuration (grid, block sizes)
+
+#### 3a. Metadata Extraction (~50 lines) - **Required for Kernel Launch**
+
+**Extract and store metadata from `gpu.launch_func` for runtime argument marshaling:**
+
+```mlir
+// Input: GPU Dialect
+gpu.launch_func @kernels::@myKernel
+    args(%arg0 : memref<?xi32>, %arg1 : i32, %arg2 : i64)
+
+// Extract metadata:
+// - arg0: memref<?xi32> → pointer (8 bytes)
+// - arg1: i32 → value (4 bytes)
+// - arg2: i64 → value (8 bytes)
+```
+
+**Metadata Storage Options:**
+
+**Option 1: Function Attributes (Recommended)**
+Store metadata as MLIR attributes on the generated launch wrapper function:
+```mlir
+func.func @launch_wrapper(...) attributes {
+  vortex.kernel_name = "_Z13launch_kernelPiii_kernel94555991377168",
+  vortex.grid_size = dense<[1, 1, 1]> : tensor<3xi32>,
+  vortex.block_size = dense<[256, 1, 1]> : tensor<3xi32>,
+  vortex.arg_metadata = [
+    {type = "ptr", size = 8},
+    {type = "i32", size = 4},
+    {type = "i64", size = 8}
+  ]
+}
+```
+
+**Option 2: Global Metadata Constants**
+Generate global constant structs containing metadata:
+```mlir
+llvm.mlir.global constant @kernel_myKernel_metadata : !llvm.struct<...> {
+  // kernel_name, grid_dims, block_dims, arg_count, arg_info[]
+}
+```
+
+**Why Metadata is Required:**
+
+Vortex kernel arguments follow a **struct-based model**:
+```c
+// Example from vortex/tests/regression/diverge
+typedef struct {
+  uint32_t num_points;   // 4 bytes
+  uint64_t src_addr;     // 8 bytes
+  uint64_t dst_addr;     // 8 bytes
+} kernel_arg_t;
+
+// Runtime usage:
+vx_upload_bytes(device, &kernel_arg, sizeof(kernel_arg_t), &args_buffer);
+vx_start(device, kernel_buffer, args_buffer);
+```
+
+The runtime needs metadata to:
+1. **Create correctly-sized argument struct** based on argument types
+2. **Pack arguments in correct order** (matching kernel signature)
+3. **Distinguish pointers from values** (8-byte addresses vs scalar values)
+4. **Handle alignment requirements** (struct padding)
+5. **Upload struct to device memory** before kernel launch
+
+**Implementation:**
+- Parse argument list from `gpu.launch_func`
+- Determine size for each argument type:
+  - `memref<*>` → 8 bytes (pointer)
+  - `i32` → 4 bytes
+  - `i64`, `f64` → 8 bytes
+  - `f32` → 4 bytes
+- Store metadata as attributes or global constants
+- Generate argument packing code that creates struct from metadata
 
 **Example Transformation:**
 ```mlir
