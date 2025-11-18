@@ -610,7 +610,107 @@ cd Polygeist
 # Outputs: hip_tests/basic.hip.mlir
 ```
 
-### 2. Polygeist Build Script
+**Critical for Metadata Extraction Work:**
+This script is essential for generating MLIR test cases from the HIP test suite. Each HIP test file contains different argument patterns that need metadata extraction:
+
+```bash
+# Generate MLIR for all HIP tests
+for hip_file in hip_tests/*.hip; do
+  ./scripts/polygeist/hip-to-gpu-dialect.sh "$hip_file" "hip_tests/mlir_output/$(basename $hip_file .hip).mlir"
+done
+```
+
+**Generated test cases show different argument patterns:**
+- `basic.hip` → scalar + pointer arguments (i32, memref<?xi32>)
+- `vecadd.hip` → multiple pointer arguments
+- `dotproduct.hip` → pointer + scalar return
+- `sgemm.hip` → matrix pointers (2D addressing)
+- `relu.hip` → float types (f32)
+- `fence.hip` → synchronization patterns
+
+**Use these for:**
+1. **Metadata extraction testing** - Different argument type combinations
+2. **Kernel launch testing** - Various grid/block configurations
+3. **Integration testing** - Real HIP kernel patterns
+4. **Validation** - Compare lowered IR with expected patterns
+
+### 2. MLIR Test Suite Generator
+
+**File:** `scripts/polygeist/generate-mlir-test-suite.sh`
+**Purpose:** Generate GPU dialect MLIR from entire HIP test suite for metadata extraction testing
+
+**Usage:**
+```bash
+./scripts/polygeist/generate-mlir-test-suite.sh
+```
+
+**Output:**
+- Converts all `.hip` files in `hip_tests/` to MLIR
+- Saves to `hip_tests/mlir_output/<name>_gpu_dialect.mlir`
+- Generates `hip_tests/mlir_output/analyze_launch_patterns.sh` analysis script
+- Prints summary with success/failure counts
+
+**What it analyzes:**
+- Number of `gpu.launch_func` operations per file
+- Number of `gpu.barrier` operations
+- Argument types and patterns for each kernel
+- Grid and block dimension patterns
+
+**Example output:**
+```
+===================================================================
+Generating MLIR GPU Dialect Test Suite from HIP Tests
+===================================================================
+
+Found 9 HIP test files
+
+Processing: basic.hip
+  Input:  hip_tests/basic.hip
+  Output: hip_tests/mlir_output/basic_gpu_dialect.mlir
+  Status: ✅ SUCCESS
+    Launch functions: 1
+    Barriers: 0
+    Arguments: args(%arg0 : memref<?xi32>, %arg1 : i32, %arg2 : i32)
+
+Processing: vecadd.hip
+  Input:  hip_tests/vecadd.hip
+  Output: hip_tests/mlir_output/vecadd_gpu_dialect.mlir
+  Status: ✅ SUCCESS
+    Launch functions: 1
+    Barriers: 0
+    Arguments: args(%arg0 : memref<?xf32>, %arg1 : memref<?xf32>, %arg2 : memref<?xf32>, %arg3 : i32)
+
+===================================================================
+Summary
+===================================================================
+Total files processed: 9
+Successful: 9
+Failed: 0
+
+Generated analysis script: hip_tests/mlir_output/analyze_launch_patterns.sh
+Run it with: ./hip_tests/mlir_output/analyze_launch_patterns.sh
+```
+
+**Analysis script usage:**
+```bash
+# Run detailed argument pattern analysis
+./hip_tests/mlir_output/analyze_launch_patterns.sh
+```
+
+**Analysis output shows:**
+- Kernel name and signature
+- Grid dimensions (blocks in)
+- Block dimensions (threads in)
+- All arguments with types
+- Argument sizes and pointer/value classification
+
+**Use for:**
+- Metadata extraction implementation (see all argument patterns)
+- Kernel launch testing (different grid/block configs)
+- FileCheck test creation (real-world patterns)
+- Integration validation (comprehensive test coverage)
+
+### 3. Polygeist Build Script
 
 **File:** `scripts/polygeist/build-polygeist.sh`
 **Purpose:** Build LLVM, MLIR, and Polygeist with optimizations
@@ -759,9 +859,70 @@ git push
 
 ### Immediate Work (Current Sprint)
 
-#### 1. Metadata Extraction Design (3-5 days)
+#### 1. Generate MLIR Test Cases from HIP Test Suite (1 day)
+
+**Goal:** Create comprehensive MLIR test files showing different kernel argument patterns
+
+**Action:** Use `generate-mlir-test-suite.sh` to automatically generate MLIR from all HIP tests:
+
+```bash
+cd /home/yaakov/vortex_hip
+
+# Generate MLIR for entire test suite
+./scripts/polygeist/generate-mlir-test-suite.sh
+```
+
+**What this script does:**
+1. Finds all `.hip` files in `hip_tests/`
+2. Converts each to GPU dialect MLIR using `hip-to-gpu-dialect.sh`
+3. Saves to `hip_tests/mlir_output/<name>_gpu_dialect.mlir`
+4. Analyzes each file (counts launch_func, barriers, extracts arguments)
+5. Generates `analyze_launch_patterns.sh` script for detailed analysis
+6. Auto-runs analysis if all conversions succeed
+
+**Manual alternative (single file):**
+```bash
+# Generate MLIR for one specific test
+./scripts/polygeist/hip-to-gpu-dialect.sh \
+  hip_tests/basic.hip \
+  hip_tests/mlir_output/basic_gpu_dialect.mlir
+```
+
+**Expected Output Files:**
+- `basic_gpu_dialect.mlir` - Simple pointer + scalar (memref<?xi32>, i32)
+- `vecadd_gpu_dialect.mlir` - Three pointers + scalar (memref<?xf32> x3, i32)
+- `dotproduct_gpu_dialect.mlir` - Two pointers + scalar + reduction
+- `sgemm_gpu_dialect.mlir` - Matrix pointers (2D memref)
+- `relu_gpu_dialect.mlir` - Float pointer + scalar (memref<?xf32>, f32)
+- `fence_gpu_dialect.mlir` - Barrier patterns + memory operations
+- `diverge_gpu_dialect.mlir` - Conditional execution patterns
+
+**Analyze for Metadata Extraction:**
+
+After generation, examine each file to identify `gpu.launch_func` patterns:
+
+```bash
+# Extract launch_func operations from all generated MLIR
+for mlir_file in hip_tests/mlir_output/*_gpu_dialect.mlir; do
+  echo "=== $(basename $mlir_file) ==="
+  grep -A 5 "gpu.launch_func" "$mlir_file"
+done
+```
+
+**Key patterns to identify:**
+1. **Argument types**: memref<?xi32>, i32, i64, f32, f64
+2. **Pointer detection**: memref<*> types → 8-byte pointers
+3. **Grid/block sizes**: Constants vs runtime values
+4. **Kernel names**: Symbol references for linking
+
+**Document findings in:**
+`hip_tests/mlir_output/ARGUMENT_PATTERNS.md` - Analysis of all argument patterns found
+
+#### 2. Metadata Extraction Design (3-5 days)
 
 **Goal:** Define how to extract and store kernel argument metadata
+
+**Input:** Real MLIR test cases from HIP test suite (generated in step 1)
 
 **Options to evaluate:**
 
@@ -790,6 +951,8 @@ llvm.mlir.global constant @kernel_metadata : !llvm.struct<...> {
 - Maintenance burden
 - Runtime access requirements
 
+**Test with:** Generated MLIR files from HIP test suite (step 1)
+
 #### 2. LaunchFuncOpLowering Implementation (1-2 weeks)
 
 **Components:**
@@ -811,18 +974,83 @@ llvm.mlir.global constant @kernel_metadata : !llvm.struct<...> {
 
 #### 3. Integration Testing (3-5 days)
 
-**Test cases:**
-- Simple kernel with no arguments
-- Kernel with scalar arguments (i32, i64, f32)
-- Kernel with pointer arguments (memref)
-- Kernel with mixed arguments
-- Multiple kernel launches
-- Different grid/block configurations
+**Test Suite:** Use generated MLIR from HIP test suite (from step 1)
 
-**Validation:**
-- Generated IR correctness (FileCheck)
-- Argument struct packing correctness
-- Vortex API call sequence correctness
+**Test cases from HIP test suite:**
+1. **`basic.hip`**
+   - Simple kernel: pointer + scalar (memref<?xi32>, i32, i32)
+   - Grid: 1x1x1, Blocks: dynamic
+   - Test: Basic metadata extraction
+
+2. **`vecadd.hip`**
+   - Three pointers + scalar (memref<?xf32> x3, i32)
+   - Grid: calculated, Blocks: 256
+   - Test: Multiple pointer arguments
+
+3. **`dotproduct.hip`**
+   - Two pointers + scalar + reduction
+   - Test: Reduction patterns, barrier usage
+
+4. **`sgemm.hip`**
+   - Matrix pointers (2D addressing)
+   - Test: Complex argument patterns, shared memory
+
+5. **`relu.hip`**
+   - Float types (memref<?xf32>, f32)
+   - Test: Float argument handling
+
+6. **`fence.hip`**
+   - Memory fence operations
+   - Test: Barrier metadata, synchronization
+
+7. **`diverge.hip`**
+   - Conditional execution
+   - Test: Control flow + barriers
+
+**Testing Workflow:**
+
+```bash
+# For each HIP test
+for hip_test in basic vecadd dotproduct sgemm relu fence diverge; do
+  echo "Testing $hip_test..."
+
+  # 1. Generate GPU dialect IR
+  ./scripts/polygeist/hip-to-gpu-dialect.sh \
+    hip_tests/${hip_test}.hip \
+    hip_tests/mlir_output/${hip_test}_gpu.mlir
+
+  # 2. Run ConvertGPUToVortex pass
+  ./Polygeist/build/bin/polygeist-opt \
+    hip_tests/mlir_output/${hip_test}_gpu.mlir \
+    -convert-gpu-to-vortex \
+    -o hip_tests/mlir_output/${hip_test}_vortex.mlir
+
+  # 3. Validate output
+  # Check for metadata attributes
+  grep "vortex.kernel_name" hip_tests/mlir_output/${hip_test}_vortex.mlir
+  grep "vortex.arg_metadata" hip_tests/mlir_output/${hip_test}_vortex.mlir
+
+  # Check for Vortex API calls
+  grep "vx_upload_kernel_bytes" hip_tests/mlir_output/${hip_test}_vortex.mlir
+  grep "vx_start" hip_tests/mlir_output/${hip_test}_vortex.mlir
+  grep "vx_barrier" hip_tests/mlir_output/${hip_test}_vortex.mlir
+done
+```
+
+**Validation Criteria:**
+- ✅ Generated IR correctness (manual inspection)
+- ✅ Metadata correctly extracted for all argument types
+- ✅ Argument struct size calculation correct
+- ✅ Vortex API call sequence present and correct
+- ✅ Grid/block dimensions properly handled (constants and runtime values)
+- ✅ Barrier IDs allocated correctly
+- ✅ No MLIR verification errors
+
+**Create FileCheck Tests:**
+After validation, create FileCheck test files for each pattern:
+- `hip_tests/mlir_output/basic_launch.mlir` - Template for simple launches
+- `hip_tests/mlir_output/vecadd_launch.mlir` - Template for multi-pointer
+- `hip_tests/mlir_output/sgemm_launch.mlir` - Template for complex args
 
 ### Future Work (Next Sprint)
 
