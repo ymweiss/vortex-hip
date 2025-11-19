@@ -2,31 +2,912 @@
 
 ## Document Purpose
 
-This document describes how Vortex compiles GPU kernels and integrates with the compiler toolchain. Understanding this flow is critical for implementing the HIP→Vortex compilation pipeline.
+This document describes how Vortex compiles GPU programs (both host and kernel code) and integrates with the compiler toolchain. It covers two compilation approaches:
+
+1. **Standard Vortex Compilation**: Traditional approach using the vx_spawn framework and custom Vortex API
+2. **HIP Integration**: New approach using HIP/CUDA syntax for portability (in development, 70% complete)
+
+Understanding both flows is critical for:
+- Working with existing Vortex applications
+- Implementing the HIP→Vortex compilation pipeline
+- Ensuring compatibility between the two approaches
 
 ---
 
-## 1. COMPILER TOOLCHAIN INTEGRATION
+## Table of Contents
 
-### 1.1 Compiler Components and Locations
+- [1. Overview: Two Compilation Approaches](#1-overview-two-compilation-approaches)
+- [2. Standard Vortex Compilation](#2-standard-vortex-compilation)
+  - [2.1 Host Code Compilation (x86)](#21-host-code-compilation-x86)
+  - [2.2 Kernel Code Compilation (RISC-V)](#22-kernel-code-compilation-risc-v)
+  - [2.3 Host-Kernel Execution Flow](#23-host-kernel-execution-flow)
+- [3. HIP-Based Compilation](#3-hip-based-compilation)
+  - [3.1 Host Code Compilation](#31-host-code-compilation)
+  - [3.2 Kernel Code Compilation](#32-kernel-code-compilation)
+  - [3.3 Host-Kernel Separation in MLIR](#33-host-kernel-separation-in-mlir)
+- [4. Compiler Toolchain Integration](#4-compiler-toolchain-integration)
+- [5. Binary Format and Loading](#5-binary-format-and-loading)
+- [6. Thread/Warp/Core Model](#6-threadwarpcore-model)
+- [7. Comparison: Standard vs HIP](#7-comparison-standard-vs-hip)
+- [8. Key Integration Requirements for HIP](#8-key-integration-requirements-for-hip)
+
+---
+
+## 1. OVERVIEW: TWO COMPILATION APPROACHES
+
+Vortex supports two distinct programming models:
+
+### 1.1 Standard Vortex (vx_spawn framework)
+
+**Status**: Production-ready, fully implemented
+
+**Characteristics**:
+- Separate host and kernel source files
+- Explicit host API (`vortex.h`) for device control
+- Kernel API (`vx_spawn.h`) for thread management
+- Direct LLVM compilation (no MLIR)
+- Manual memory management
+
+**Use Case**: Native Vortex applications, maximum control
+
+### 1.2 HIP Integration
+
+**Status**: In development (70% kernel-side, 30% host-side remaining)
+
+**Characteristics**:
+- Unified source files (`.hip`) with host and device code
+- HIP/CUDA-compatible API (portable to NVIDIA/AMD GPUs)
+- MLIR-based compilation pipeline via Polygeist
+- Automatic lowering to Vortex primitives
+- GPU dialect intermediate representation
+
+**Use Case**: Portable GPU applications, compatibility with HIP/CUDA ecosystem
+
+### 1.3 Compilation Model Comparison
+
+Both approaches produce the same final output:
+- **Host binary** (x86 or RISC-V host architecture)
+- **Kernel binary** (.vxbin format, RISC-V with +vortex extensions)
+- Runtime linkage via **libvortex.so**
+
+---
+
+## 2. STANDARD VORTEX COMPILATION
+
+### 2.1 Host Code Compilation (x86)
+
+#### 2.1.1 Host Program Structure
+
+**Example**: `vortex/tests/regression/vecadd/main.cpp`
+
+```cpp
+#include <vortex.h>  // Vortex runtime API
+#include <vector>
+
+int main() {
+    const uint32_t count = 1024;
+
+    // 1. Device Initialization
+    vx_device_h device;
+    vx_dev_open(&device);
+
+    // 2. Allocate device memory
+    vx_buffer_h src0_buffer, src1_buffer, dst_buffer;
+    size_t buf_size = count * sizeof(int32_t);
+
+    vx_mem_alloc(device, buf_size, VX_MEM_READ, &src0_buffer);
+    vx_mem_alloc(device, buf_size, VX_MEM_READ, &src1_buffer);
+    vx_mem_alloc(device, buf_size, VX_MEM_WRITE, &dst_buffer);
+
+    // Get device addresses
+    uint64_t src0_addr, src1_addr, dst_addr;
+    vx_mem_address(src0_buffer, &src0_addr);
+    vx_mem_address(src1_buffer, &src1_addr);
+    vx_mem_address(dst_buffer, &dst_addr);
+
+    // 3. Prepare host data
+    std::vector<int32_t> h_src0(count), h_src1(count), h_dst(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        h_src0[i] = i;
+        h_src1[i] = i * 2;
+    }
+
+    // 4. Upload data to device
+    vx_copy_to_dev(src0_buffer, h_src0.data(), 0, buf_size);
+    vx_copy_to_dev(src1_buffer, h_src1.data(), 0, buf_size);
+
+    // 5. Prepare kernel arguments
+    kernel_arg_t kernel_arg;
+    kernel_arg.src0_addr = src0_addr;
+    kernel_arg.src1_addr = src1_addr;
+    kernel_arg.dst_addr = dst_addr;
+    kernel_arg.num_points = count;
+
+    // 6. Upload kernel binary
+    vx_buffer_h krnl_buffer;
+    vx_upload_kernel_file(device, "kernel.vxbin", &krnl_buffer);
+
+    // 7. Upload kernel arguments
+    vx_buffer_h args_buffer;
+    vx_upload_bytes(device, &kernel_arg, sizeof(kernel_arg_t), &args_buffer);
+
+    // 8. Start device execution
+    vx_start(device, krnl_buffer, args_buffer);
+
+    // 9. Wait for completion
+    vx_ready_wait(device, VX_MAX_TIMEOUT);
+
+    // 10. Download results
+    vx_copy_from_dev(h_dst.data(), dst_buffer, 0, buf_size);
+
+    // 11. Cleanup
+    vx_mem_free(src0_buffer);
+    vx_mem_free(src1_buffer);
+    vx_mem_free(dst_buffer);
+    vx_buf_release(krnl_buffer);
+    vx_buf_release(args_buffer);
+    vx_dev_close(device);
+
+    return 0;
+}
+```
+
+#### 2.1.2 Host Compilation Pipeline
+
+```
+main.cpp (C++ with vortex.h API)
+    ↓
+[g++ or clang++]
+    - Standard C++17 compilation
+    - Includes: -I$(VORTEX_HOME)/runtime/include
+    - Optimization: -O3
+    ↓
+main.o (Object file)
+    ↓
+[Linker]
+    - Links: -L$(VORTEX_RT_PATH) -lvortex
+    - Driver-specific: -lvortex-simx / -lvortex-rtlsim / -lvortex-fpga
+    ↓
+executable (Host binary - x86 ELF)
+    - Dynamically linked to libvortex.so
+    - Controls Vortex device via runtime API
+```
+
+#### 2.1.3 Host Compilation Flags
+
+```makefile
+# Standard C++ compiler
+CXX = g++  # or clang++
+
+# Compilation flags
+CXXFLAGS += -std=c++17 -Wall -Wextra -Wno-maybe-uninitialized
+CXXFLAGS += -O3
+CXXFLAGS += -I$(VORTEX_HOME)/runtime/include
+
+# Linking
+LDFLAGS += -L$(VORTEX_RT_PATH) -lvortex
+LDFLAGS += -pthread  # Runtime uses threads
+```
+
+#### 2.1.4 Vortex Runtime API
+
+**Header**: `vortex/runtime/include/vortex.h`
+
+**Device Management**:
+```c
+int vx_dev_open(vx_device_h* hdevice);
+int vx_dev_close(vx_device_h hdevice);
+int vx_dev_caps(vx_device_h hdevice, uint32_t caps_id, uint64_t *value);
+```
+
+**Memory Management**:
+```c
+int vx_mem_alloc(vx_device_h hdevice, uint64_t size, int flags, vx_buffer_h* hbuffer);
+int vx_mem_free(vx_buffer_h hbuffer);
+int vx_mem_address(vx_buffer_h hbuffer, uint64_t* address);
+int vx_mem_reserve(vx_device_h hdevice, uint64_t address, uint64_t size, int flags, vx_buffer_h* hbuffer);
+```
+
+**Data Transfer**:
+```c
+int vx_copy_to_dev(vx_buffer_h hbuffer, const void* host_ptr, uint64_t dst_offset, uint64_t size);
+int vx_copy_from_dev(void* host_ptr, vx_buffer_h hbuffer, uint64_t src_offset, uint64_t size);
+```
+
+**Execution Control**:
+```c
+int vx_start(vx_device_h hdevice, vx_buffer_h hkernel, vx_buffer_h harguments);
+int vx_ready_wait(vx_device_h hdevice, uint64_t timeout);
+```
+
+**Utility Functions**:
+```c
+int vx_upload_kernel_file(vx_device_h hdevice, const char* filename, vx_buffer_h* hbuffer);
+int vx_upload_bytes(vx_device_h hdevice, const void* content, uint64_t size, vx_buffer_h* hbuffer);
+int vx_buf_release(vx_buffer_h hbuffer);
+```
+
+### 2.2 Kernel Code Compilation (RISC-V)
+
+#### 2.2.1 Kernel Program Structure
+
+**Example**: `vortex/tests/regression/vecadd/kernel.cpp`
+
+```cpp
+#include <vx_spawn.h>
+#include "common.h"
+
+// Kernel arguments structure
+typedef struct {
+    uint64_t src0_addr;
+    uint64_t src1_addr;
+    uint64_t dst_addr;
+    uint32_t num_points;
+} kernel_arg_t;
+
+// Kernel function - executed by each thread
+void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
+    auto src0_ptr = reinterpret_cast<TYPE*>(arg->src0_addr);
+    auto src1_ptr = reinterpret_cast<TYPE*>(arg->src1_addr);
+    auto dst_ptr  = reinterpret_cast<TYPE*>(arg->dst_addr);
+
+    // blockIdx.x provided by vx_spawn framework
+    // Each thread processes one element
+    uint32_t idx = blockIdx.x;
+    if (idx < arg->num_points) {
+        dst_ptr[idx] = src0_ptr[idx] + src1_ptr[idx];
+    }
+}
+
+// Entry point for kernel
+int main() {
+    // Read kernel arguments from CSR (Control/Status Register)
+    kernel_arg_t* arg = (kernel_arg_t*)csr_read(VX_CSR_MSCRATCH);
+
+    // Spawn threads to execute kernel_body
+    // Dimension 1: 1D grid
+    // Grid size: arg->num_points blocks
+    // Block size: 1 thread per block
+    return vx_spawn_threads(1, &arg->num_points, nullptr,
+                           (vx_kernel_func_cb)kernel_body, arg);
+}
+```
+
+#### 2.2.2 Kernel Compilation Pipeline
+
+```
+kernel.cpp (C++ with vx_spawn.h)
+    ↓
+[llvm-vortex clang++]
+    - Target: riscv32-unknown-elf (or riscv64)
+    - March: rv32imaf (or rv64imafd)
+    - Custom: -Xclang -target-feature -Xclang +vortex
+    - Includes: -I$(VORTEX_HOME)/kernel/include
+    - Optimization: -O3 -mcmodel=medany
+    - Freestanding: -nostartfiles -nostdlib
+    ↓
+kernel.o (RISC-V object file)
+    ↓
+[llvm-vortex clang++ linker]
+    - Linker script: -T link32.ld
+    - Entry: --defsym=STARTUP_ADDR=0x80000000
+    - Libraries: libvortex.a, libc.a, libm.a
+    ↓
+kernel.elf (RISC-V ELF binary)
+    ↓
+[llvm-objdump] (optional, for debugging)
+    - Generate kernel.dump disassembly
+    ↓
+[vxbin.py]
+    - Extract LOAD segments
+    - Create header with VMA range
+    ↓
+kernel.vxbin (Vortex binary format)
+    - Ready to upload to device
+```
+
+#### 2.2.3 Kernel Compilation Flags
+
+```makefile
+# LLVM-Vortex toolchain
+VX_CC  = $(LLVM_VORTEX)/bin/clang
+VX_CXX = $(LLVM_VORTEX)/bin/clang++
+VX_DP  = $(LLVM_VORTEX)/bin/llvm-objdump
+VX_CP  = $(LLVM_VORTEX)/bin/llvm-objcopy
+
+# Architecture flags
+CFLAGS += -march=rv32imaf -mabi=ilp32f  # 32-bit
+# CFLAGS += -march=rv64imafd -mabi=lp64d  # 64-bit
+
+# Vortex-specific LLVM flags
+LLVM_CFLAGS += --sysroot=$(RISCV_SYSROOT)
+LLVM_CFLAGS += --gcc-toolchain=$(RISCV_TOOLCHAIN_PATH)
+LLVM_CFLAGS += -Xclang -target-feature -Xclang +vortex  # CRITICAL
+LLVM_CFLAGS += -Xclang -target-feature -Xclang +zicond
+
+# Optimization and code generation
+VX_CFLAGS += -O3 -mcmodel=medany
+VX_CFLAGS += -fno-rtti -fno-exceptions
+VX_CFLAGS += -fdata-sections -ffunction-sections
+VX_CFLAGS += -nostartfiles -nostdlib
+VX_CFLAGS += -mllvm -disable-loop-idiom-all
+
+# Include paths
+VX_CFLAGS += -I$(VORTEX_HOME)/kernel/include
+
+# Linking flags
+VX_LDFLAGS += -Wl,-Bstatic,--gc-sections
+VX_LDFLAGS += -T,$(VORTEX_HOME)/kernel/scripts/link$(XLEN).ld
+VX_LDFLAGS += --defsym=STARTUP_ADDR=$(STARTUP_ADDR)
+VX_LDFLAGS += $(VORTEX_KN_PATH)/libvortex.a
+```
+
+#### 2.2.4 Build Example
+
+```makefile
+# Compile kernel
+kernel.elf: kernel.cpp
+    $(VX_CXX) $(VX_CFLAGS) $^ $(VX_LDFLAGS) -o $@
+
+# Generate disassembly
+kernel.dump: kernel.elf
+    $(VX_DP) -D $< > $@
+
+# Convert to vxbin
+kernel.vxbin: kernel.elf
+    OBJCOPY=$(VX_CP) $(VORTEX_HOME)/kernel/scripts/vxbin.py $< $@
+```
+
+### 2.3 Host-Kernel Execution Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    HOST PROCESS (x86)                       │
+│  Executable linked to libvortex.so                          │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ↓
+        vx_dev_open(&device)
+                       │  Opens device driver (simx/rtlsim/fpga)
+                       ↓
+        vx_upload_kernel_file("kernel.vxbin", &kernel_buf)
+                       │  Loads RISC-V binary into device memory
+                       ↓
+        vx_upload_bytes(&args, sizeof(args), &args_buf)
+                       │  Uploads kernel arguments
+                       ↓
+        vx_start(device, kernel_buf, args_buf)
+                       │  Writes args address to VX_CSR_MSCRATCH
+                       │  Jumps to kernel entry point (_start)
+                       ↓
+┌─────────────────────────────────────────────────────────────┐
+│            KERNEL EXECUTION (RISC-V on Vortex)              │
+│                                                             │
+│  1. _start (from vx_start.S)                               │
+│      - Initialize TLS (Thread-Local Storage)                │
+│      - Set up stack                                         │
+│      - Jump to main()                                       │
+│                                                             │
+│  2. main()                                                  │
+│      - Read args from VX_CSR_MSCRATCH                      │
+│      - Call vx_spawn_threads(grid, block, kernel_body, args)│
+│                                                             │
+│  3. vx_spawn_threads() (from vx_spawn.c)                   │
+│      - Loop through grid dimensions                         │
+│      - For each block:                                      │
+│          - Calculate blockIdx.x/y/z                        │
+│          - Set TLS variables                               │
+│          - Spawn warps if block has multiple threads        │
+│          - Call kernel_body() for each thread              │
+│                                                             │
+│  4. kernel_body()                                          │
+│      - Access blockIdx, threadIdx from TLS                 │
+│      - Perform computation                                  │
+│      - Write results to memory                             │
+│                                                             │
+│  5. Return to main()                                       │
+│      - Cleanup, return to host                             │
+└─────────────────────────────────────────────────────────────┘
+                       │
+                       ↓
+        vx_ready_wait(device, timeout)
+                       │  Host polls device for completion
+                       ↓
+        vx_copy_from_dev(host_ptr, dst_buffer, ...)
+                       │  Download results from device
+                       ↓
+        vx_mem_free(buffers...), vx_dev_close(device)
+                       │  Cleanup
+                       ↓
+                   Host exits
+```
+
+---
+
+## 3. HIP-BASED COMPILATION
+
+### 3.1 Host Code Compilation
+
+#### 3.1.1 HIP Host Program Example
+
+**Example**: `hip_tests/basic.hip`
+
+```cpp
+#include <hip/hip_runtime.h>
+#include <iostream>
+
+__global__ void vectorAdd(int* a, int* b, int* c, int count) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < count) {
+        c[idx] = a[idx] + b[idx];
+    }
+}
+
+void launch_basic(int* d_src, int* d_dst, uint32_t count, uint32_t threads_per_block) {
+    dim3 grid((count + threads_per_block - 1) / threads_per_block);
+    dim3 block(threads_per_block);
+
+    hipLaunchKernelGGL(vectorAdd, grid, block, 0, 0,
+                       d_src, d_dst, count);
+}
+
+int main() {
+    const int count = 1024;
+
+    int *h_a, *h_b, *h_c;
+    int *d_a, *d_b, *d_c;
+
+    // Host allocation
+    h_a = new int[count];
+    h_b = new int[count];
+    h_c = new int[count];
+
+    // Device allocation
+    hipMalloc(&d_a, count * sizeof(int));
+    hipMalloc(&d_b, count * sizeof(int));
+    hipMalloc(&d_c, count * sizeof(int));
+
+    // Initialize and upload
+    for (int i = 0; i < count; i++) {
+        h_a[i] = i;
+        h_b[i] = i * 2;
+    }
+    hipMemcpy(d_a, h_a, count * sizeof(int), hipMemcpyHostToDevice);
+    hipMemcpy(d_b, h_b, count * sizeof(int), hipMemcpyHostToDevice);
+
+    // Launch kernel
+    launch_basic(d_a, d_c, count, 32);
+
+    // Synchronize and download
+    hipDeviceSynchronize();
+    hipMemcpy(h_c, d_c, count * sizeof(int), hipMemcpyDeviceToHost);
+
+    // Cleanup
+    hipFree(d_a); hipFree(d_b); hipFree(d_c);
+    delete[] h_a; delete[] h_b; delete[] h_c;
+
+    return 0;
+}
+```
+
+#### 3.1.2 HIP Host Compilation Pipeline
+
+**Current Status**: 30% implemented (design complete, lowering pass TODO)
+
+```
+basic.hip (Unified HIP source)
+    ↓
+[Polygeist --cuda-lower]
+    - Parses HIP host functions as standard C++
+    - Converts hipLaunchKernelGGL → gpu.launch_func
+    - Preserves hipMalloc, hipMemcpy as function calls
+    ↓
+MLIR: Host functions (func.func)
+    - func.func @launch_basic(...)
+    - func.func @main()
+    - Contains: arith, scf, memref operations
+    - Contains: gpu.launch_func operations
+    ↓
+[ConvertGPUToVortex pass - HOST SIDE] ⚠️ NOT YET IMPLEMENTED
+    - Extract metadata from gpu.launch_func (DONE ✓)
+    - Lower gpu.launch_func to LLVM dialect:
+        ↓
+      LLVM: Argument marshaling
+        - llvm.alloca for argument struct
+        - llvm.store for each argument
+        ↓
+      LLVM: Kernel loading (if not pre-loaded)
+        - llvm.call @vx_upload_kernel_bytes(device, binary, size)
+        ↓
+      LLVM: Argument upload
+        - llvm.call @vx_upload_bytes(device, args_struct, size)
+        ↓
+      LLVM: Kernel launch
+        - llvm.call @vx_start(device, kernel_handle, args_handle)
+        ↓
+      LLVM: Synchronization
+        - llvm.call @vx_ready_wait(device, timeout)
+    ↓
+[Standard MLIR lowering passes]
+    - --convert-func-to-llvm
+    - --convert-arith-to-llvm
+    - --convert-memref-to-llvm
+    ↓
+LLVM Dialect (pure)
+    - All operations in LLVM dialect
+    - Calls to vx_* runtime functions
+    ↓
+[mlir-translate --mlir-to-llvmir]
+    - Convert MLIR LLVM dialect → LLVM IR (.ll)
+    ↓
+LLVM IR (.ll file)
+    ↓
+[Host compiler: clang++ or g++]
+    - Standard x86 compilation
+    - Links to libvortex.so
+    ↓
+Host executable (x86 ELF)
+    - Dynamically linked to libvortex.so
+    - Contains lowered HIP API → vx_* calls
+```
+
+**Missing Implementation (30%)**:
+The `LaunchFuncOpLowering` pattern in `ConvertGPUToVortex.cpp` needs to generate the LLVM calls shown above. Currently only metadata extraction is implemented.
+
+### 3.2 Kernel Code Compilation
+
+#### 3.2.1 HIP Kernel Example
+
+```cpp
+__global__ void vectorAdd(int* a, int* b, int* c, int count) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < count) {
+        c[idx] = a[idx] + b[idx];
+    }
+}
+```
+
+#### 3.2.2 HIP Kernel Compilation Pipeline
+
+**Current Status**: 70% implemented
+
+```
+basic.hip (Unified HIP source)
+    ↓
+[Polygeist --cuda-lower --emit-cuda]
+    - Detects __global__ functions
+    - Converts to gpu.module / gpu.func
+    - Lowers <<<>>> syntax to gpu.launch_func
+    ↓
+MLIR: GPU Dialect (kernel code)
+    gpu.module @__polygeist_gpu_module {
+      gpu.func @vectorAdd(...) kernel {
+        %tid_x = gpu.thread_id x       // threadIdx.x
+        %bid_x = gpu.block_id x        // blockIdx.x
+        %bdim_x = gpu.block_dim x      // blockDim.x
+
+        // Kernel computation with arith, scf, memref ops
+
+        gpu.barrier                    // __syncthreads()
+        gpu.return
+      }
+    }
+    ↓
+[ConvertGPUToVortex pass - KERNEL SIDE] ✓ 70% COMPLETE
+    - Preprocessing: Consolidate polygeist.alternatives (DONE ✓)
+    - Remove duplicate kernels (DONE ✓)
+    - Lower gpu.thread_id → vx_get_threadIdx() TLS access (DONE ✓)
+    - Lower gpu.block_id → vx_get_blockIdx() TLS access (DONE ✓)
+    - Lower gpu.block_dim → vx_get_blockDim() TLS access (DONE ✓)
+    - Lower gpu.grid_dim → vx_get_gridDim() TLS access (DONE ✓)
+    - Lower gpu.barrier → llvm.call @vx_barrier (DONE ✓)
+    - Extract metadata from gpu.launch_func (DONE ✓)
+    ↓
+MLIR: GPU func with LLVM intrinsics
+    gpu.module @__polygeist_gpu_module {
+      llvm.func @vx_get_threadIdx() -> !llvm.ptr
+      llvm.func @vx_get_blockIdx() -> !llvm.ptr
+      llvm.func @vx_barrier(i32, i32)
+
+      gpu.func @vectorAdd(...) kernel {
+        // Access threadIdx via TLS
+        %tidx_ptr_call = llvm.call @vx_get_threadIdx() : () -> !llvm.ptr
+        %tidx_field_ptr = llvm.getelementptr %tidx_ptr_call[0, 0]
+        %tid_x_i32 = llvm.load %tidx_field_ptr : !llvm.ptr -> i32
+
+        // Similar for blockIdx, blockDim, gridDim
+
+        // Barrier
+        llvm.call @vx_barrier(%bar_id, %num_warps) : (i32, i32) -> ()
+      }
+    }
+    ↓
+[Standard GPU lowering passes] ⚠️ NEED VERIFICATION
+    - --convert-gpu-to-llvm (or custom variant)
+    - gpu.func → llvm.func
+    - gpu.module → plain module
+    ↓
+LLVM Dialect (pure RISC-V kernel)
+    - llvm.func @vectorAdd(i64, i32, i32, !llvm.ptr, !llvm.ptr)
+    - All operations in LLVM dialect
+    - Calls to vx_get_threadIdx, vx_barrier intrinsics
+    ↓
+[mlir-translate --mlir-to-llvmir]
+    - Convert to LLVM IR
+    ↓
+LLVM IR (.ll file, RISC-V target)
+    ↓
+[llvm-vortex clang++]
+    - Target: riscv32-unknown-elf
+    - March: rv32imaf +vortex
+    - Links: libvortex.a (provides vx_get_* functions)
+    ↓
+kernel.elf (RISC-V ELF)
+    ↓
+[vxbin.py]
+    ↓
+kernel.vxbin (Vortex binary format)
+```
+
+### 3.3 Host-Kernel Separation in MLIR
+
+Polygeist automatically separates host and kernel code in the generated MLIR:
+
+```mlir
+module attributes {
+  gpu.container_module,
+  llvm.target_triple = "x86_64-unknown-linux-gnu",  // Host target
+  polygeist.gpu_module.llvm.target_triple = "nvptx64-nvidia-cuda"  // Will be changed to riscv
+} {
+  //=================================================================
+  // KERNEL CODE (Device side)
+  //=================================================================
+  gpu.module @__polygeist_gpu_module {
+    gpu.func @vectorAdd(%arg0: index, %arg1: i32, %arg2: i32,
+                        %arg3: memref<?xi32>, %arg4: memref<?xi32>) kernel {
+      %tid_x = gpu.thread_id x
+      %bid_x = gpu.block_id x
+      %bdim_x = gpu.block_dim x
+
+      %idx = arith.addi %tid_x, ... : index
+      // ... kernel computation ...
+
+      gpu.return
+    }
+  }
+
+  //=================================================================
+  // HOST CODE (Host side)
+  //=================================================================
+  func.func @launch_basic(%arg0: memref<?xi32>, %arg1: memref<?xi32>,
+                          %arg2: i32, %arg3: i32) {
+    %grid_x = arith.constant 32 : index
+    %block_x = arith.constant 32 : index
+    %c1 = arith.constant 1 : index
+
+    // Grid/block dimension calculations (arith ops)
+    %num_blocks = arith.divsi ...
+
+    // Launch kernel
+    gpu.launch_func @__polygeist_gpu_module::@vectorAdd
+      blocks in (%num_blocks, %c1, %c1)
+      threads in (%block_x, %c1, %c1)
+      args(%arg2 : i32, %arg3 : i32, %arg0 : memref<?xi32>, %arg1 : memref<?xi32>)
+      {vortex.kernel_metadata = "..."}  // Metadata added by our pass
+
+    return
+  }
+
+  func.func @main() {
+    // Host program logic (memory allocation, data init, calls to launch_basic)
+    return
+  }
+}
+```
+
+**Key Observations**:
+1. **gpu.module** contains device code compiled for RISC-V
+2. **func.func** operations contain host code compiled for x86
+3. **gpu.launch_func** is the boundary between host and device
+4. Two separate compilation units with different targets
+
+---
+
+## 7. COMPARISON: STANDARD VS HIP
+
+### 7.1 Feature Comparison
+
+| Feature | Standard Vortex | HIP Integration |
+|---------|-----------------|-----------------|
+| **Source Structure** | Separate host/kernel files | Single .hip file |
+| **Host API** | `vx_*` functions (vortex.h) | `hip*` functions (hip_runtime.h) |
+| **Kernel API** | `vx_spawn.h` framework | `__global__`, threadIdx, blockIdx |
+| **Memory API** | `vx_mem_alloc`, `vx_copy_to_dev` | `hipMalloc`, `hipMemcpy` |
+| **Launch API** | `vx_start(kernel, args)` | `hipLaunchKernelGGL(<<<grid, block>>>)` |
+| **Compilation** | Direct LLVM (clang++) | Polygeist → MLIR → LLVM |
+| **IR** | None (direct to LLVM IR) | GPU dialect → LLVM dialect |
+| **Binary Format** | .vxbin | .vxbin (same) |
+| **Runtime** | libvortex.so | libvortex.so (same) |
+| **Portability** | Vortex-specific | HIP/CUDA-compatible |
+| **Status** | Production ✅ | In development (70%) |
+
+### 7.2 Code Comparison
+
+#### Memory Allocation
+
+**Standard Vortex**:
+```cpp
+vx_buffer_h buffer;
+vx_mem_alloc(device, size, VX_MEM_READ, &buffer);
+uint64_t dev_addr;
+vx_mem_address(buffer, &dev_addr);
+vx_copy_to_dev(buffer, host_ptr, 0, size);
+```
+
+**HIP**:
+```cpp
+int* d_ptr;
+hipMalloc(&d_ptr, size);
+hipMemcpy(d_ptr, host_ptr, size, hipMemcpyHostToDevice);
+```
+
+#### Kernel Launch
+
+**Standard Vortex**:
+```cpp
+// Prepare argument struct
+kernel_arg_t args = {.src = src_addr, .dst = dst_addr, .count = count};
+
+// Upload kernel and arguments
+vx_upload_kernel_file(device, "kernel.vxbin", &kernel_buf);
+vx_upload_bytes(device, &args, sizeof(args), &args_buf);
+
+// Launch
+vx_start(device, kernel_buf, args_buf);
+vx_ready_wait(device, VX_MAX_TIMEOUT);
+```
+
+**HIP**:
+```cpp
+dim3 grid(num_blocks);
+dim3 block(threads_per_block);
+
+hipLaunchKernelGGL(myKernel, grid, block, 0, 0,
+                   d_src, d_dst, count);
+hipDeviceSynchronize();
+```
+
+#### Kernel Function
+
+**Standard Vortex**:
+```cpp
+void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
+    uint32_t idx = blockIdx.x;  // From vx_spawn TLS
+    if (idx < arg->count) {
+        arg->dst[idx] = arg->src[idx] * 2;
+    }
+}
+
+int main() {
+    kernel_arg_t* arg = (kernel_arg_t*)csr_read(VX_CSR_MSCRATCH);
+    return vx_spawn_threads(1, &arg->count, nullptr, kernel_body, arg);
+}
+```
+
+**HIP**:
+```cpp
+__global__ void myKernel(int* src, int* dst, int count) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < count) {
+        dst[idx] = src[idx] * 2;
+    }
+}
+// No main() needed - HIP runtime handles launch
+```
+
+### 7.3 Compilation Flow Comparison
+
+#### Standard Vortex
+```
+┌──────────────┐                    ┌──────────────┐
+│  main.cpp    │                    │ kernel.cpp   │
+│  (Host)      │                    │  (Kernel)    │
+└──────┬───────┘                    └──────┬───────┘
+       │                                   │
+       ↓ [g++]                             ↓ [llvm-vortex clang++]
+       │                                   │ +vortex feature
+       │                                   │ Links libvortex.a
+┌──────┴───────┐                    ┌──────┴───────┐
+│ host binary  │                    │ kernel.vxbin │
+│  (x86 ELF)   │                    │ (RISC-V bin) │
+└──────┬───────┘                    └──────┬───────┘
+       │                                   │
+       │ Links libvortex.so                │ Uploaded at runtime
+       └────────────┬──────────────────────┘
+                    ↓
+              vx_start(kernel)
+```
+
+#### HIP Integration
+```
+┌─────────────────────────────────────────┐
+│            basic.hip                    │
+│  (Unified host + kernel source)         │
+└─────────────┬───────────────────────────┘
+              │
+              ↓ [Polygeist --cuda-lower]
+              │
+┌─────────────┴───────────────────────────┐
+│         MLIR (GPU Dialect)              │
+│                                         │
+│  ┌─────────────┐   ┌──────────────┐   │
+│  │ func.func   │   │ gpu.module   │   │
+│  │ (Host)      │   │ (Kernel)     │   │
+│  └─────┬───────┘   └──────┬───────┘   │
+│        │                  │            │
+└────────┼──────────────────┼────────────┘
+         │                  │
+         ↓                  ↓
+  [ConvertGPUToVortex]  [ConvertGPUToVortex]
+         │                  │
+         ↓ LLVM dialect     ↓ LLVM dialect
+         │ vx_* calls       │ vx_get_* TLS access
+         │                  │
+         ↓ [LLVM passes]    ↓ [LLVM passes]
+         │                  │
+┌────────┴────────┐  ┌──────┴────────┐
+│  host binary    │  │ kernel.vxbin  │
+│   (x86 ELF)     │  │ (RISC-V bin)  │
+└────────┬────────┘  └──────┬────────┘
+         │                  │
+         │ Links libvortex.so│ Uploaded at runtime
+         └─────────┬─────────┘
+                   ↓
+         vx_start(kernel) [generated by lowering]
+```
+
+### 7.4 Integration Strategy
+
+Both approaches ultimately use the **same underlying runtime**:
+- Same **libvortex.so** host runtime
+- Same **libvortex.a** kernel library
+- Same **.vxbin** binary format
+- Same **vx_spawn** thread framework
+
+**HIP integration goal**: Transform HIP API calls into equivalent vx_* calls at compile time, producing binaries identical to hand-written standard Vortex code.
+
+---
+
+## 4. COMPILER TOOLCHAIN INTEGRATION
+
+### 4.1 Compiler Components and Locations
 
 **LLVM-Vortex Backend:**
 - **Location**: `llvm-vortex/`
 - **Purpose**: LLVM compiler with Vortex-specific RISC-V target extensions
 - **Base**: LLVM 14+ monorepo (llvm, clang, compiler-rt, etc.)
 - **Target**: RISC-V with custom `+vortex` feature flag
+- **Used by**: Standard Vortex compilation (direct), HIP integration (via MLIR)
 
 **RISC-V GNU Toolchain:**
 - **Location**: `$(TOOLDIR)/riscv32-gnu-toolchain` or `riscv64-gnu-toolchain`
 - **Purpose**: GCC cross-compiler, binutils, and C library for final linking
 - **Prefix**: `riscv32-unknown-elf` or `riscv64-unknown-elf`
+- **Used by**: Standard Vortex (linking), HIP integration (linking)
 
 **POCL (Portable OpenCL):**
 - **Location**: `$(TOOLDIR)/pocl`
 - **Purpose**: OpenCL runtime with Vortex device backend
 - **Integration**: Uses LLVM-Vortex for code generation
+- **Note**: Alternative to HIP for portable GPU programming
 
-### 1.2 Environment Configuration
+**Polygeist (HIP Integration Only):**
+- **Location**: `Polygeist/`
+- **Purpose**: HIP/CUDA to MLIR GPU dialect converter
+- **Integration**: Frontend for HIP compilation pipeline
+- **Note**: Not used by standard Vortex compilation
+
+### 4.2 Environment Configuration
 
 From `vortex/build/config.mk`:
 
@@ -47,7 +928,7 @@ LIBC_VORTEX ?= $(TOOLDIR)/libc$(XLEN)
 LIBCRT_VORTEX ?= $(TOOLDIR)/libcrt$(XLEN)
 ```
 
-### 1.3 Toolchain Installation
+### 4.3 Toolchain Installation
 
 **Installation Script**: `vortex/ci/toolchain_install.sh.in`
 
@@ -74,9 +955,9 @@ The script downloads and installs prebuilt toolchains:
 
 ---
 
-## 2. COMPILATION PIPELINE DETAILS
+## 5. DETAILED COMPILATION PIPELINE (Standard Vortex)
 
-### 2.1 Complete Flow
+### 5.1 Complete Flow
 
 ```
 OpenCL/GPU Source (.cl)
@@ -128,7 +1009,7 @@ OpenCL/GPU Source (.cl)
    Upload to Vortex Device
 ```
 
-### 2.2 Compilation Flags
+### 5.2 Compilation Flags
 
 From `vortex/kernel/Makefile` and test Makefiles:
 
@@ -175,7 +1056,7 @@ LDFLAGS += $(VORTEX_HOME)/kernel/libvortex.a
 LDFLAGS += -lm -lc
 ```
 
-### 2.3 Kernel Library Build
+### 5.3 Kernel Library Build
 
 **Location**: `vortex/kernel/`
 
