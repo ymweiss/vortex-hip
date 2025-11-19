@@ -342,8 +342,8 @@ llvm.call @vx_barrier(%bar_id, %num_threads) : (i32, i32) -> ()
 ## Developer A: Thread Model & Kernel Launch
 
 **Estimated Time:** 2-3 weeks
-**Estimated LOC:** ~300-350 lines + tests
-**Scope:** 🔵 **KERNEL-SIDE** (device code) + 🟢 **HOST-SIDE** (launch infrastructure)
+**Estimated LOC:** ~350-400 lines + tests
+**Scope:** 🔵 **KERNEL-SIDE** (device code) + 🟢 **HOST-SIDE** (launch infrastructure + argument marshaling)
 
 ### Responsibilities
 
@@ -454,7 +454,7 @@ llvm.func @kernel() {
 }
 ```
 
-#### 3. Kernel Launch Infrastructure (~75-100 lines) 🟢 **HOST-SIDE**
+#### 3. Kernel Launch Infrastructure (~125-150 lines) 🟢 **HOST-SIDE**
 
 **Convert `gpu.launch_func` to Vortex kernel execution sequence:**
 **Location:** Host wrapper functions (x86 code)
@@ -492,9 +492,12 @@ call @vx_ready_wait(device, timeout)
 - Extract kernel binary reference from `gpu.module`
 - Calculate grid/block dimensions for Vortex (warp/core mapping)
 - **Extract metadata from kernel arguments** (types, sizes, pointer vs value)
-- **Generate argument struct packing code** based on metadata
-- Package kernel arguments into struct (coordinate with Developer B on argument structure)
-- Generate complete launch sequence
+- **Generate argument struct packing code** based on metadata:
+  - Allocate struct on stack (llvm.alloca)
+  - Pack each argument (llvm.getelementptr + llvm.store)
+  - Handle type conversions (memref → pointer, index → i32/i64)
+  - Ensure proper alignment and padding
+- Generate complete launch sequence (upload kernel, upload args, start, wait)
 - Handle launch configuration (grid, block sizes)
 
 #### 3a. Metadata Extraction (~50 lines) 🟢 **HOST-SIDE** - **Required for Kernel Launch**
@@ -654,8 +657,8 @@ llvm.func @vx_ready_wait(!llvm.ptr, i64) -> i32
 ## Developer B: Memory Operations & Argument Marshaling
 
 **Estimated Time:** 2-3 weeks
-**Estimated LOC:** ~250-300 lines + tests
-**Scope:** 🔵 **KERNEL-SIDE** (device memory ops) + 🟢 **HOST-SIDE** (argument packing)
+**Estimated LOC:** ~300-350 lines + tests
+**Scope:** 🔵 **KERNEL-SIDE** (device memory ops) + 🟢 **HOST-SIDE** (HIP API lowering)
 
 ### Responsibilities
 
@@ -730,35 +733,9 @@ llvm.call @vx_mem_free(%buffer_handle) : (!llvm.ptr) -> i32
 
 **Note:** Current test files don't include HIP API calls, so this needs new test cases.
 
-#### 3. Argument Marshaling (~50-100 lines) 🟢 **HOST-SIDE**
+#### 3. (Reserved for future expansion)
 
-**Convert kernel arguments to Vortex argument structure:**
-**Location:** Host wrapper functions (x86 code)
-**Target:** Struct packing code for vx_upload_bytes()
-
-```mlir
-gpu.launch_func blocks(%bx, %by, %bz) threads(%tx, %ty, %tz) args(...)
-  // kernel arguments
-
-→
-
-// Set up kernel arguments structure
-call @vx_upload_kernel_bytes(kernel_binary)
-call @vx_start(num_warps, num_threads)
-call @vx_ready_wait(device)
-```
-
-**Vortex API Functions:**
-- `vx_upload_kernel_bytes(kernel_data, size)` - Upload kernel to device
-- `vx_start(device)` - Start kernel execution
-- `vx_ready_wait(device, timeout)` - Wait for completion
-
-**Implementation Details:**
-- Extract kernel body as separate function
-- Package kernel arguments into Vortex argument structure
-- Map grid/block dimensions to Vortex warp/thread counts
-- Handle kernel entry/exit sequences
-- Set up proper function calling conventions
+**Note:** Argument marshaling is now part of Developer A's Kernel Launch Infrastructure (section 3) to keep the complete launch sequence unified. Developer B focuses on kernel-side memory operations and host-side HIP API lowering.
 
 #### 3. Testing Suite
 
@@ -997,12 +974,12 @@ call @vx_ready_wait(device)
 |------|-------------|-------------|-------------|
 | **1** | Thread model design | Memory model design | HIP testing (4h), Infrastructure setup |
 | **2** | Thread ID implementation | Memory ops implementation | Code reviews, standup |
-| **3** | Sync primitives + tests | Launch infrastructure + tests | Code reviews, integration prep |
-| **4** | Metadata extraction | Registration code gen | Integration, combined testing |
+| **3** | Sync primitives + Launch infrastructure + Argument marshaling + tests | HIP API lowering + tests | Code reviews, integration prep |
+| **4** | Metadata extraction + integration | HIP API testing + integration | Integration, combined testing |
 | **5** | End-to-end testing | End-to-end testing | Full pipeline validation, delivery |
 
 **Total Duration:** 5 weeks
-**Total Custom Code:** ~500 lines (250 per developer) + ~200 lines shared infrastructure
+**Total Custom Code:** ~650-750 lines (~350-400 per developer) + ~200 lines shared infrastructure
 **Total Testing Code:** ~400 lines (200 per developer)
 
 ---
@@ -1036,9 +1013,9 @@ call @vx_ready_wait(device)
 |------|------|-----|-------------|
 | Thread ID mapping | 🔵 KERNEL | ~100-150 | Convert gpu.thread_id/block_id to vx_thread_id()/vx_warp_id() |
 | Synchronization | 🔵 KERNEL | ~50-75 | Convert gpu.barrier to vx_barrier() |
-| Kernel launch | 🟢 HOST | ~75-100 | Generate vx_upload/start/wait sequence |
+| Kernel launch | 🟢 HOST | ~125-150 | Generate vx_upload/start/wait sequence + argument packing |
 | Metadata extraction | 🟢 HOST | ~50 | Extract argument metadata for marshaling |
-| **TOTAL** | **Mixed** | **~300-350** | **60% kernel, 40% host** |
+| **TOTAL** | **Mixed** | **~350-400** | **50% kernel, 50% host** |
 
 ### Developer B Work Breakdown
 
@@ -1046,8 +1023,7 @@ call @vx_ready_wait(device)
 |------|------|-----|-------------|--------|
 | Memory operations | 🔵 KERNEL | ~150-200 | Address spaces, shared memory allocation | ✓ |
 | HIP API lowering | 🟢 HOST | ~100-150 | Convert hipMalloc/hipMemcpy/etc to vx_* calls | ⚠️ TODO |
-| Argument marshaling | 🟢 HOST | ~50 | Pack arguments into struct for vx_upload_bytes() | ✓ (partial) |
-| **TOTAL** | **Mixed** | **~350-400** | **40% kernel, 60% host** | **70% done** |
+| **TOTAL** | **Mixed** | **~300-350** | **50% kernel, 50% host** | **60% done** |
 
 ### Overall Work Distribution
 
