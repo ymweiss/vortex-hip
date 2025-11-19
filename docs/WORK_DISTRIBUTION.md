@@ -12,9 +12,82 @@ The Phase 2 compiler work requires implementing **one custom MLIR pass** (~500 l
 
 The work is split into two balanced modules:
 - **Developer A:** Thread Model & Synchronization (~250-300 lines)
-- **Developer B:** Memory Operations & Launch Infrastructure (~250-300 lines)
+  - 🔵 **KERNEL-SIDE:** Thread/block ID mapping, synchronization (device code)
+  - 🟢 **HOST-SIDE:** Kernel launch infrastructure, metadata extraction (host code)
+- **Developer B:** Memory Operations & Argument Marshaling (~250-300 lines)
+  - 🔵 **KERNEL-SIDE:** Memory operations, address spaces (device code)
+  - 🟢 **HOST-SIDE:** Argument struct packing (host code)
 
 Both developers contribute equally to infrastructure setup, testing, and integration.
+
+### Kernel-Side vs Host-Side Work
+
+**Legend:**
+- 🔵 **KERNEL-SIDE** = Device code (runs on Vortex RISC-V GPU cores, compiles to .vxbin)
+- 🟢 **HOST-SIDE** = Host code (runs on x86 CPU, calls libvortex.so runtime)
+
+**Important:** The compiler generates TWO separate binaries:
+1. **Host binary** (x86 ELF) - Contains launch infrastructure, argument packing, runtime API calls
+2. **Kernel binary** (.vxbin RISC-V) - Contains thread operations, memory ops, barriers
+
+Each compiler transformation targets one of these two compilation units.
+
+### Compilation Pipeline with Kernel/Host Annotations
+
+```
+HIP Source (.hip)
+    ↓
+[Polygeist --cuda-lower]
+    ↓
+MLIR GPU Dialect
+    │
+    ├─────────────────────────────────────┬────────────────────────────────────┐
+    │                                     │                                    │
+    ↓                                     ↓                                    ↓
+gpu.module (KERNEL-SIDE 🔵)      func.func (HOST-SIDE 🟢)           gpu.launch_func (HOST-SIDE 🟢)
+- gpu.thread_id                  - arith operations                - Grid/block dimensions
+- gpu.block_id                   - scf.for loops                   - Kernel arguments
+- gpu.barrier                    - memref operations
+- gpu.alloc (shared)             - function calls
+    │                                     │                                    │
+    ↓                                     ↓                                    ↓
+[GPUToVortexLLVM Pass]           [GPUToVortexLLVM Pass]            [GPUToVortexLLVM Pass]
+    │                                     │                                    │
+    ↓                                     ↓                                    ↓
+DEVELOPER A (KERNEL-SIDE):       DEVELOPER B (HOST-SIDE):          DEVELOPER A (HOST-SIDE):
+- vx_thread_id()                 - (Pass through, handled           - vx_upload_kernel_bytes()
+- vx_warp_id()                     by header inlines)               - vx_upload_bytes(args_struct)
+- vx_barrier()                                                      - vx_start()
+                                                                    - vx_ready_wait()
+DEVELOPER B (KERNEL-SIDE):
+- __local_mem()
+- Address space attrs
+    │                                     │                                    │
+    ↓                                     ↓                                    ↓
+LLVM Dialect (RISC-V target)     LLVM Dialect (x86 target)          LLVM Dialect (x86 target)
+    │                                     │                                    │
+    └─────────────────────────────────────┴────────────────────────────────────┘
+                                          │
+                    ┌─────────────────────┴─────────────────────┐
+                    ↓                                           ↓
+            [mlir-translate]                            [mlir-translate]
+                    ↓                                           ↓
+            LLVM IR (RISC-V)                            LLVM IR (x86)
+                    ↓                                           ↓
+            [llvm-vortex clang++]                       [clang++]
+                    ↓                                           ↓
+            kernel.vxbin                                host_binary
+            (RISC-V binary)                             (x86 ELF)
+            - vx_thread_id calls                        - vx_start calls
+            - vx_barrier calls                          - vx_upload_bytes calls
+            - TLS variable access                       - Links to libvortex.so
+                    │                                           │
+                    └─────────────────┬─────────────────────────┘
+                                      ↓
+                            Runtime Execution:
+                            host_binary loads kernel.vxbin
+                            and executes on Vortex device
+```
 
 ---
 
@@ -158,36 +231,29 @@ The system uses **two separate runtime libraries** for different purposes:
 
 ### HIP API Implementation Strategy
 
-HIP uses a **header-based API** approach (same as ROCm and CUDA backends):
+**IMPORTANT:** HIP API calls (`hipMalloc`, `hipMemcpy`, `hipDeviceSynchronize`) will need to be lowered by the compiler pass in Phase 2B (30% remaining work). They are NOT handled by header-based inlines.
 
-**Our Implementation:**
-```cpp
-// runtime/include/hip/hip_runtime.h (our Vortex backend)
+**What Polygeist actually does:**
+1. Polygeist converts `<<<>>>` kernel launch syntax to `gpu.launch_func` operations ✓
+2. Polygeist generates `func.func` for host launch wrappers containing `gpu.launch_func` ✓
+3. Polygeist converts kernel functions to `gpu.func` with `gpu.thread_id`, `gpu.block_id`, etc. ✓
+4. **Polygeist does NOT inline or lower HIP API calls** - they remain as function calls in MLIR
 
-static inline hipError_t hipMalloc(void** ptr, size_t size) {
-    return vx_mem_alloc(vx_get_device(), size, ptr);
-}
+**Phase 2B remaining work (30%):**
+The GPUToVortexLLVM pass must lower HIP host API calls:
+```mlir
+// Input: MLIR func.func with HIP API calls
+func.call @hipMalloc(%ptr, %size)
+func.call @hipMemcpy(%dst, %src, %size, %kind)
+func.call @hipDeviceSynchronize()
 
-static inline hipError_t hipMemcpy(void* dst, const void* src,
-                                    size_t size, hipMemcpyKind kind) {
-    if (kind == hipMemcpyHostToDevice)
-        return vx_copy_to_dev(vx_get_device(), dst, src, size);
-    else if (kind == hipMemcpyDeviceToHost)
-        return vx_copy_from_dev(vx_get_device(), dst, src, size);
-    // ...
-}
-
-static inline hipError_t hipDeviceSynchronize() {
-    return vx_ready_wait(vx_get_device(), -1);
-}
+// Output: LLVM dialect with Vortex runtime calls
+llvm.call @vx_mem_alloc(%device, %size, %ptr)
+llvm.call @vx_copy_to_dev(%device, %dst, %src, %size)  // or vx_copy_from_dev
+llvm.call @vx_ready_wait(%device, %timeout)
 ```
 
-**What this means for compilation:**
-1. User includes `<hip/hip_runtime.h>` (our version with Vortex backend)
-2. C preprocessor inlines HIP API → Vortex API calls
-3. Polygeist sees `vx_*` calls as regular C functions (standard handling)
-4. Polygeist **does** handle kernel launch syntax `<<<>>>` via `--cuda-lower` flag
-5. GPUToVortexLLVM pass handles kernel constructs (`threadIdx`, `blockIdx`, `__syncthreads()`)
+**Note:** Current test files (basic_kernel.hip, etc.) only contain kernel+launch wrapper, no hipMalloc/hipMemcpy calls, so this lowering is not yet tested.
 
 **Complete compilation flow:**
 ```bash
@@ -277,12 +343,15 @@ llvm.call @vx_barrier(%bar_id, %num_threads) : (i32, i32) -> ()
 
 **Estimated Time:** 2-3 weeks
 **Estimated LOC:** ~300-350 lines + tests
+**Scope:** 🔵 **KERNEL-SIDE** (device code) + 🟢 **HOST-SIDE** (launch infrastructure)
 
 ### Responsibilities
 
-#### 1. Thread & Block ID Mapping (~100-150 lines)
+#### 1. Thread & Block ID Mapping (~100-150 lines) 🔵 **KERNEL-SIDE**
 
 **Convert GPU dialect thread operations to Vortex runtime calls:**
+**Location:** Inside kernel functions (device code)
+**Target:** RISC-V binary running on Vortex GPU cores
 
 ```mlir
 // GPU Dialect → Vortex LLVM (Device-Side)
@@ -340,9 +409,11 @@ llvm.func @kernel() {
 }
 ```
 
-#### 2. Synchronization Primitives (~50-75 lines)
+#### 2. Synchronization Primitives (~50-75 lines) 🔵 **KERNEL-SIDE**
 
 **Convert GPU synchronization to Vortex barriers:**
+**Location:** Inside kernel functions (device code)
+**Target:** RISC-V barrier instructions
 
 ```mlir
 // GPU Dialect → Vortex LLVM
@@ -383,9 +454,11 @@ llvm.func @kernel() {
 }
 ```
 
-#### 3. Kernel Launch Infrastructure (~75-100 lines)
+#### 3. Kernel Launch Infrastructure (~75-100 lines) 🟢 **HOST-SIDE**
 
 **Convert `gpu.launch_func` to Vortex kernel execution sequence:**
+**Location:** Host wrapper functions (x86 code)
+**Target:** Calls to libvortex.so runtime API
 
 ```mlir
 // GPU Dialect → Vortex LLVM (Host-Side)
@@ -424,9 +497,11 @@ call @vx_ready_wait(device, timeout)
 - Generate complete launch sequence
 - Handle launch configuration (grid, block sizes)
 
-#### 3a. Metadata Extraction (~50 lines) - **Required for Kernel Launch**
+#### 3a. Metadata Extraction (~50 lines) 🟢 **HOST-SIDE** - **Required for Kernel Launch**
 
 **Extract and store metadata from `gpu.launch_func` for runtime argument marshaling:**
+**Location:** Compiler pass analysis phase
+**Target:** MLIR attributes or global constants for host code
 
 ```mlir
 // Input: GPU Dialect
@@ -580,14 +655,17 @@ llvm.func @vx_ready_wait(!llvm.ptr, i64) -> i32
 
 **Estimated Time:** 2-3 weeks
 **Estimated LOC:** ~250-300 lines + tests
+**Scope:** 🔵 **KERNEL-SIDE** (device memory ops) + 🟢 **HOST-SIDE** (argument packing)
 
 ### Responsibilities
 
-**Note:** HIP host API calls (`hipMalloc`, `hipMemcpy`, etc.) are handled by header files, NOT by this compiler pass. This pass only handles kernel-side memory operations.
+**Note:** HIP host API calls (`hipMalloc`, `hipMemcpy`, etc.) **ARE part of this compiler pass work** and need to be lowered to Vortex runtime calls. This is currently missing (part of the 30% remaining work).
 
-#### 1. Memory Operations (~150-200 lines)
+#### 1. Memory Operations (~150-200 lines) 🔵 **KERNEL-SIDE**
 
 **Convert GPU dialect memory operations to Vortex API:**
+**Location:** Inside kernel functions (device code)
+**Target:** RISC-V memory instructions with address space attributes
 
 ```mlir
 // GPU Dialect Memory Operations (kernel-side)
@@ -616,14 +694,51 @@ addrspace(5) (local)   →  Vortex private/stack memory
 - Handle shared memory allocation (via `__local_mem()` or similar)
 - Implement load/store operations with correct address spaces
 
-#### 2. Kernel Launch Infrastructure (~50-100 lines)
+#### 2. HIP Host API Lowering (~100-150 lines) 🟢 **HOST-SIDE** ⚠️ **NOT YET IMPLEMENTED**
 
-**Convert GPU kernel launch to Vortex invocation:**
+**Convert HIP host API calls to Vortex runtime calls:**
+**Location:** Host functions (x86 code)
+**Target:** Calls to libvortex.so runtime API
 
 ```mlir
-gpu.launch blocks(%bx, %by, %bz) threads(%tx, %ty, %tz) {
-  // kernel body
-}
+// Input: MLIR with HIP API calls
+func.call @hipMalloc(%ptr_addr, %size) : (!llvm.ptr, i64) -> i32
+func.call @hipMemcpy(%dst, %src, %size, %kind) : (!llvm.ptr, !llvm.ptr, i64, i32) -> i32
+func.call @hipDeviceSynchronize() : () -> i32
+func.call @hipFree(%ptr) : (!llvm.ptr) -> i32
+
+// Output: LLVM dialect with Vortex calls
+%device = llvm.call @vx_get_current_device() : () -> !llvm.ptr
+llvm.call @vx_mem_alloc(%device, %size, %flags, %buffer_handle) : (!llvm.ptr, i64, i32, !llvm.ptr) -> i32
+llvm.call @vx_copy_to_dev(%device, %dst_addr, %src, %size) : (!llvm.ptr, i64, !llvm.ptr, i64) -> i32
+llvm.call @vx_ready_wait(%device, %timeout) : (!llvm.ptr, i64) -> i32
+llvm.call @vx_mem_free(%buffer_handle) : (!llvm.ptr) -> i32
+```
+
+**HIP API to Vortex API Mapping:**
+- `hipMalloc(ptr, size)` → `vx_mem_alloc(device, size, flags, &buffer)` + `vx_mem_address(buffer, ptr)`
+- `hipMemcpy(dst, src, size, H2D)` → `vx_copy_to_dev(device, dst_addr, src, size)`
+- `hipMemcpy(dst, src, size, D2H)` → `vx_copy_from_dev(device, dst, src_addr, size)`
+- `hipDeviceSynchronize()` → `vx_ready_wait(device, -1)`
+- `hipFree(ptr)` → `vx_mem_free(buffer)`
+
+**Implementation Details:**
+- Detect HIP API function calls by name
+- Map hipMemcpyKind enum to vx_copy_to_dev vs vx_copy_from_dev
+- Handle device handle management (global or thread-local device)
+- Handle buffer handle tracking (map pointers to vx_buffer_h)
+
+**Note:** Current test files don't include HIP API calls, so this needs new test cases.
+
+#### 3. Argument Marshaling (~50-100 lines) 🟢 **HOST-SIDE**
+
+**Convert kernel arguments to Vortex argument structure:**
+**Location:** Host wrapper functions (x86 code)
+**Target:** Struct packing code for vx_upload_bytes()
+
+```mlir
+gpu.launch_func blocks(%bx, %by, %bz) threads(%tx, %ty, %tz) args(...)
+  // kernel arguments
 
 →
 
@@ -910,3 +1025,57 @@ call @vx_ready_wait(device)
 - Vortex GPU and llvm-vortex are available as submodules (✅ ready)
 
 **Key Risk Mitigation:** By using standard MLIR passes for SCF→GPU conversion, we've eliminated the highest-risk component of the original plan. The remaining work is straightforward dialect conversion with clear Vortex API mappings.
+
+---
+
+## Kernel-Side vs Host-Side Work Summary
+
+### Developer A Work Breakdown
+
+| Task | Side | LOC | Description |
+|------|------|-----|-------------|
+| Thread ID mapping | 🔵 KERNEL | ~100-150 | Convert gpu.thread_id/block_id to vx_thread_id()/vx_warp_id() |
+| Synchronization | 🔵 KERNEL | ~50-75 | Convert gpu.barrier to vx_barrier() |
+| Kernel launch | 🟢 HOST | ~75-100 | Generate vx_upload/start/wait sequence |
+| Metadata extraction | 🟢 HOST | ~50 | Extract argument metadata for marshaling |
+| **TOTAL** | **Mixed** | **~300-350** | **60% kernel, 40% host** |
+
+### Developer B Work Breakdown
+
+| Task | Side | LOC | Description | Status |
+|------|------|-----|-------------|--------|
+| Memory operations | 🔵 KERNEL | ~150-200 | Address spaces, shared memory allocation | ✓ |
+| HIP API lowering | 🟢 HOST | ~100-150 | Convert hipMalloc/hipMemcpy/etc to vx_* calls | ⚠️ TODO |
+| Argument marshaling | 🟢 HOST | ~50 | Pack arguments into struct for vx_upload_bytes() | ✓ (partial) |
+| **TOTAL** | **Mixed** | **~350-400** | **40% kernel, 60% host** | **70% done** |
+
+### Overall Work Distribution
+
+**Total Compiler Pass:** ~650-750 lines
+- **Kernel-side (🔵):** ~300-400 lines (45%) - Runs on Vortex GPU, compiles to RISC-V .vxbin
+- **Host-side (🟢):** ~350-450 lines (55%) - Runs on x86 CPU, calls libvortex.so
+
+**Current Implementation Status:** ~70% complete
+- ✓ Kernel-side operations (thread IDs, barriers, metadata extraction)
+- ✓ Host-side kernel launch infrastructure (partial)
+- ⚠️ HIP host API lowering (hipMalloc, hipMemcpy, etc.) - **30% remaining work**
+
+**Both developers work on both kernel-side and host-side code**, ensuring:
+- Full understanding of complete compilation pipeline
+- Balanced complexity distribution
+- Knowledge sharing across host/device boundary
+- Better code review quality
+
+**Critical Update:** HIP host API calls (hipMalloc, hipMemcpy, hipDeviceSynchronize) **must be lowered by the compiler pass**. They are NOT handled by header-based inlines. This lowering is part of the 30% remaining work.
+
+This pass handles:
+1. **Kernel-side (🔵 45%):** GPU dialect operations → Vortex device intrinsics
+   - gpu.thread_id → vx_thread_id()
+   - gpu.barrier → vx_barrier()
+   - gpu.alloc (shared) → __local_mem()
+
+2. **Host-side (🟢 55%):** Host operations → Vortex runtime API calls
+   - gpu.launch_func → vx_upload_kernel_bytes() + vx_start() + vx_ready_wait()
+   - func.call @hipMalloc → vx_mem_alloc() ⚠️ **TODO**
+   - func.call @hipMemcpy → vx_copy_to_dev() / vx_copy_from_dev() ⚠️ **TODO**
+   - func.call @hipDeviceSynchronize → vx_ready_wait() ⚠️ **TODO**
