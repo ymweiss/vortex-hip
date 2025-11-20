@@ -771,6 +771,350 @@ llvm.call @vx_mem_free(%buffer_handle) : (!llvm.ptr) -> i32
 
 ---
 
+## Phase 2C: Post-LLVM Compilation Integration
+
+**Purpose:** Integrate LLVM IR output from Phase 2B with the standard Vortex build system to produce final executable binaries.
+
+**Estimated Time:** 3-4 days (integrated into Week 4-5)
+**Estimated LOC:** ~100-150 lines (build system integration)
+**Scope:** Build system setup, toolchain configuration, binary packaging
+
+### Overview
+
+Phase 2B generates LLVM IR (.ll files) with embedded Vortex API calls. Phase 2C handles the **post-IR compilation** to produce final binaries that can execute on Vortex hardware/simulator.
+
+**Input from Phase 2B:**
+- Host LLVM IR (`.ll`) - Contains vx_mem_alloc, vx_start, vx_ready_wait calls (x86-64 target)
+- Kernel LLVM IR (`.ll`) - Contains vx_get_threadIdx, vx_barrier calls (RISC-V target)
+
+**Output from Phase 2C:**
+- Host executable (x86 ELF) - Dynamically linked to libvortex.so
+- Kernel binary (`.vxbin`) - Vortex binary format, ready for device upload
+
+### Compilation Pipeline Overview
+
+```
+Phase 2B LLVM IR (.ll files)
+    │
+    ├─────────────────────────────────┬─────────────────────────────────┐
+    │                                 │                                 │
+    ↓                                 ↓                                 ↓
+Host LLVM IR (x86-64)        Kernel LLVM IR (RISC-V)         Metadata
+- vx_mem_alloc calls         - vx_get_threadIdx calls        - Kernel names
+- vx_start calls             - vx_barrier calls              - Argument counts
+- vx_ready_wait calls        - TLS variable access           - Grid/block dims
+    │                                 │
+    ↓                                 ↓
+[Phase 2C: Host Compilation]  [Phase 2C: Kernel Compilation]
+    │                                 │
+    ↓                                 ↓
+host_binary (x86 ELF)         kernel.vxbin (Vortex binary)
+- Links to libvortex.so       - min_vma/max_vma header
+- Calls vx_* runtime API      - Raw RISC-V binary data
+    │                                 │
+    └─────────────────┬───────────────┘
+                      ↓
+              Runtime Execution:
+              host_binary loads kernel.vxbin
+              and executes on Vortex device
+```
+
+---
+
+### Phase 2C.1: Host Binary Compilation (~40-50 lines)
+
+**Compile host LLVM IR to x86 executable:**
+
+```bash
+# Step 1: Compile LLVM IR to object file
+clang++ -std=c++17 -O2 \
+    -I$(VORTEX_HOME)/runtime/include \
+    -c host.ll -o host.o
+
+# Step 2: Link with Vortex runtime library
+clang++ host.o \
+    -L$(VORTEX_RT_PATH) -lvortex \
+    -lpthread \
+    -o executable
+```
+
+**Implementation Details:**
+- Use standard C++ compiler (clang++ or g++)
+- Include Vortex runtime headers: `-I$(VORTEX_HOME)/runtime/include`
+- Link dynamically with libvortex.so: `-L$(VORTEX_RT_PATH) -lvortex`
+- Ensure vx_* function signatures match vortex.h declarations
+- Handle library search paths (LD_LIBRARY_PATH at runtime)
+
+**Build System Integration:**
+```cmake
+# CMakeLists.txt example
+add_executable(${PROJECT_NAME}_host ${HOST_LLVM_IR})
+target_include_directories(${PROJECT_NAME}_host PRIVATE ${VORTEX_RUNTIME_INCLUDE})
+target_link_libraries(${PROJECT_NAME}_host vortex pthread)
+target_link_directories(${PROJECT_NAME}_host PRIVATE ${VORTEX_RT_PATH})
+```
+
+---
+
+### Phase 2C.2: Kernel Binary Compilation (~50-70 lines)
+
+**Compile kernel LLVM IR to RISC-V binary:**
+
+```bash
+# Step 1: Compile LLVM IR to RISC-V object file
+$(LLVM_VORTEX)/bin/clang++ \
+    -target riscv32-unknown-elf \
+    -march=rv32imaf -mabi=ilp32f \
+    -Xclang -target-feature -Xclang +vortex \
+    --sysroot=$(RISCV_SYSROOT) \
+    --gcc-toolchain=$(RISCV_TOOLCHAIN_PATH) \
+    -O3 -mcmodel=medany \
+    -fno-rtti -fno-exceptions \
+    -fdata-sections -ffunction-sections \
+    -nostartfiles -nostdlib \
+    -I$(VORTEX_HOME)/kernel/include \
+    -c kernel.ll -o kernel.o
+
+# Step 2: Link with Vortex kernel runtime (libvortex.a)
+$(LLVM_VORTEX)/bin/clang++ \
+    kernel.o \
+    -Wl,-Bstatic,--gc-sections \
+    -T$(VORTEX_HOME)/kernel/scripts/link32.ld \
+    --defsym=STARTUP_ADDR=0x80000000 \
+    $(VORTEX_KN_PATH)/libvortex.a \
+    -L$(LIBC_VORTEX)/lib -lm -lc \
+    $(LIBCRT_VORTEX)/lib/baremetal/libclang_rt.builtins-riscv32.a \
+    -o kernel.elf
+```
+
+**Critical Flags:**
+- `-Xclang -target-feature -Xclang +vortex` - **REQUIRED** for Vortex ISA extensions
+- `-march=rv32imaf` - RISC-V 32-bit with integer, multiply, atomic, float
+- `-mabi=ilp32f` - ILP32 ABI with single-precision float registers
+- `-nostartfiles -nostdlib` - Bare-metal kernel (no OS, no standard startup)
+- `-T link32.ld` - Custom linker script defines memory layout
+- `--defsym=STARTUP_ADDR=0x80000000` - Kernel entry point address
+
+**libvortex.a Contents:**
+The kernel links with `$(VORTEX_KN_PATH)/libvortex.a`, which provides:
+- **vx_start.S** - Startup code, TLS initialization, jump to main()
+- **vx_spawn.c** - `vx_spawn_threads()` function (maps GPU grid/block to warps)
+- **vx_intrinsics.h** - Vortex intrinsics: vx_barrier, vx_get_threadIdx, vx_warp_id
+- **vx_syscalls.c** - System call implementations
+- **vx_print.c/.S** - Printf support for debugging
+
+**Linker Script (link32.ld):**
+Defines memory sections and layout:
+```ld
+ENTRY(_start)
+STARTUP_ADDR = 0x80000000;
+
+SECTIONS {
+  . = STARTUP_ADDR;
+  .text : { *(.text .text.*) }
+  .rodata : { *(.rodata .rodata.*) }
+  .data : { *(.data .data.*) }
+  .bss : { *(.bss .bss.*) }
+  ...
+}
+```
+
+**Build System Integration:**
+```cmake
+# CMakeLists.txt example
+add_executable(${PROJECT_NAME}_kernel ${KERNEL_LLVM_IR})
+set_target_properties(${PROJECT_NAME}_kernel PROPERTIES
+    COMPILE_FLAGS "-target riscv32-unknown-elf -march=rv32imaf -Xclang -target-feature -Xclang +vortex"
+    LINK_FLAGS "-T${VORTEX_HOME}/kernel/scripts/link32.ld --defsym=STARTUP_ADDR=0x80000000")
+target_link_libraries(${PROJECT_NAME}_kernel ${VORTEX_KN_PATH}/libvortex.a m c)
+```
+
+---
+
+### Phase 2C.3: Binary Packaging (~20-30 lines)
+
+**Convert kernel.elf to Vortex binary format (.vxbin):**
+
+```bash
+# Generate disassembly (optional, for debugging)
+$(LLVM_VORTEX)/bin/llvm-objdump -D kernel.elf > kernel.dump
+
+# Convert to .vxbin format
+OBJCOPY=$(LLVM_VORTEX)/bin/llvm-objcopy \
+    $(VORTEX_HOME)/kernel/scripts/vxbin.py \
+    kernel.elf kernel.vxbin
+```
+
+**vxbin.py Script:**
+- **Location:** `vortex/kernel/scripts/vxbin.py` (already exists, no modifications needed)
+- **Purpose:** Converts RISC-V ELF to Vortex binary format
+
+**vxbin Format:**
+```
+Offset  Size    Content
+────────────────────────────────
+0       8       min_vma (minimum virtual address, little-endian uint64)
+8       8       max_vma (maximum virtual address, little-endian uint64)
+16      N       Raw binary data from ELF LOAD segments
+```
+
+**How vxbin.py Works:**
+1. Reads kernel.elf and extracts LOAD segments using `readelf`
+2. Determines min_vma and max_vma from segment addresses
+3. Extracts raw binary using `llvm-objcopy -O binary`
+4. Packages as: `[min_vma][max_vma][binary_data]`
+
+**Build System Integration:**
+```cmake
+# Add custom command to generate .vxbin
+add_custom_command(
+    OUTPUT ${PROJECT_NAME}.vxbin
+    COMMAND OBJCOPY=${LLVM_OBJCOPY} ${VXBIN_SCRIPT}
+            ${PROJECT_NAME}_kernel ${PROJECT_NAME}.vxbin
+    DEPENDS ${PROJECT_NAME}_kernel
+    COMMENT "Generating Vortex binary format"
+)
+```
+
+---
+
+### Phase 2C.4: Build System Integration (~30-50 lines)
+
+**Toolchain Configuration:**
+
+```cmake
+# CMakeLists.txt - Toolchain setup
+set(VORTEX_HOME "$ENV{VORTEX_HOME}" CACHE PATH "Vortex home directory")
+set(LLVM_VORTEX "$ENV{LLVM_VORTEX}" CACHE PATH "LLVM-Vortex toolchain path")
+set(RISCV_TOOLCHAIN_PATH "$ENV{RISCV_TOOLCHAIN_PATH}" CACHE PATH "RISC-V GNU toolchain")
+
+# Architecture selection
+set(XLEN 32 CACHE STRING "RISC-V XLEN (32 or 64)")
+if(XLEN EQUAL 64)
+    set(ARCH_FLAGS "-march=rv64imafd -mabi=lp64d")
+    set(STARTUP_ADDR "0x180000000")
+else()
+    set(ARCH_FLAGS "-march=rv32imaf -mabi=ilp32f")
+    set(STARTUP_ADDR "0x80000000")
+endif()
+
+# Vortex runtime library paths
+set(VORTEX_RT_PATH "${VORTEX_HOME}/runtime/lib")
+set(VORTEX_KN_PATH "${VORTEX_HOME}/kernel")
+```
+
+**Makefile Alternative:**
+```makefile
+# Makefile - Follows vortex/tests/regression/common.mk pattern
+include $(VORTEX_HOME)/build/config.mk
+
+# Compilation rules
+%.o: %.ll
+	$(VX_CXX) $(VX_CFLAGS) -c $< -o $@
+
+kernel.elf: kernel.o
+	$(VX_CXX) $^ $(VX_LDFLAGS) -o $@
+
+kernel.vxbin: kernel.elf
+	OBJCOPY=$(VX_CP) $(VORTEX_HOME)/kernel/scripts/vxbin.py $< $@
+
+# Host compilation
+host: host.ll
+	$(CXX) $(CXXFLAGS) $< -L$(VORTEX_RT_PATH) -lvortex -o $@
+```
+
+---
+
+### Phase 2C.5: Integration with Existing Infrastructure
+
+**Reuse Existing Vortex Components:**
+- ✅ **vxbin.py** - Already exists, no modifications needed
+- ✅ **link32.ld / link64.ld** - Linker scripts already provided
+- ✅ **libvortex.a** - Kernel runtime already built
+- ✅ **libvortex.so** - Host runtime already built
+- ✅ **common.mk** - Build patterns from vortex/tests/regression/
+
+**Follow Proven Patterns:**
+Reference implementation: `vortex/tests/regression/vecadd/`
+- Host code: main.cpp (uses vortex.h API)
+- Kernel code: kernel.cpp (uses vx_spawn.h)
+- Build system: Makefile includes ../common.mk
+- Execution: `LD_LIBRARY_PATH=$(VORTEX_RT_PATH) VORTEX_DRIVER=simx ./vecadd`
+
+**Environment Variables:**
+```bash
+export VORTEX_HOME=/path/to/vortex
+export LLVM_VORTEX=/path/to/llvm-vortex
+export RISCV_TOOLCHAIN_PATH=/path/to/riscv-gnu-toolchain
+export VORTEX_DRIVER=simx  # or rtlsim, fpga
+```
+
+---
+
+### Validation and Testing
+
+**Phase 2C Validation:**
+1. **Binary format check:** Generated .vxbin matches standard Vortex format
+2. **Symbol resolution:** All vx_* calls resolve correctly
+3. **Disassembly review:** kernel.dump shows valid RISC-V instructions
+4. **Runtime loading:** vx_upload_kernel_file() successfully loads .vxbin
+5. **Execution test:** Kernel runs and produces correct results
+
+**Integration Test Cases:**
+- Compile Phase 2B LLVM IR for vecadd test
+- Compare binary output with standard Vortex vecadd.vxbin
+- Run through simulator (VORTEX_DRIVER=simx)
+- Verify results match expected output
+- Test with all Phase 1 test kernels
+
+**Success Criteria:**
+- ✅ Host binary links and executes without errors
+- ✅ Kernel .vxbin format validated (correct header, VMA range)
+- ✅ Generated binaries run on Vortex simulator
+- ✅ Output matches Phase 1 manually-written kernels
+- ✅ Build system integrates with existing Vortex infrastructure
+
+---
+
+### Developer Assignment
+
+**Collaborative Work (Both Developers) - Week 4-5**
+
+**Week 4: Phase 2C Setup and Integration**
+- Monday-Tuesday: Toolchain configuration and testing
+  - Configure LLVM_VORTEX, RISCV_TOOLCHAIN_PATH
+  - Test host compilation (compile + link with libvortex.so)
+  - Test kernel compilation (RISC-V + vxbin.py packaging)
+  - Validate against existing vecadd example
+- Wednesday-Friday: Build system integration
+  - Create CMakeLists.txt or Makefile rules
+  - Handle RV32 vs RV64 architecture selection
+  - Integrate with Phase 2B LLVM IR output
+  - Test incremental builds
+
+**Week 5: End-to-End Pipeline Validation**
+- Complete pipeline: `.hip` → MLIR → LLVM IR → **Phase 2C** → binaries → execution
+- Run all Phase 1 test kernels through complete flow
+- Performance validation (compare with Phase 1 baselines)
+- Documentation and build system cleanup
+
+---
+
+### Implementation Files
+
+**Build System:**
+- `phase2-compiler/CMakeLists.txt` - CMake build rules (or Makefile alternative)
+- `phase2-compiler/toolchain.cmake` - Toolchain configuration
+- `scripts/compile-hip-binary.sh` - Wrapper script for complete compilation
+
+**No Modifications Needed:**
+- ✅ `vortex/kernel/scripts/vxbin.py` - Already functional
+- ✅ `vortex/kernel/scripts/link32.ld` - Already correct
+- ✅ `vortex/kernel/libvortex.a` - Already built
+- ✅ `vortex/runtime/libvortex.so` - Already built
+
+---
+
 ## Shared Work Schedule
 
 ### Week 1: Setup & HIP Testing
@@ -833,33 +1177,44 @@ llvm.call @vx_mem_free(%buffer_handle) : (!llvm.ptr) -> i32
 - Code reviews (1-2 hours/week)
 - Integration check-ins (Friday afternoons)
 
-### Week 4: Metadata Integration
+### Week 4: Integration & Phase 2C Setup
 
-**Monday-Wednesday: Phase 2C - Metadata Extraction (collaborative)**
+**Monday-Tuesday: Phase 2C - Toolchain Setup (collaborative)**
+- Configure llvm-vortex and RISC-V toolchain paths
+- Test host compilation (x86 + libvortex.so linking)
+- Test kernel compilation (RISC-V + vxbin.py)
+- Validate against vortex/tests/regression/vecadd example
+
+**Wednesday: Metadata Extraction (collaborative)**
 
 **Developer A: Extract metadata from MLIR**
-- Parse MLIR function signatures
+- Parse MLIR function signatures from gpu.launch_func
 - Extract argument types, sizes, alignments
 - Identify pointer vs value arguments
-- Generate metadata structures
+- Store metadata as MLIR attributes
 
-**Developer B: Kernel Registration Generation**
-- Integrate with Phase 1 DWARF-based metadata generator
-- Generate kernel registration code
-- Create `hipKernelArgumentMetadata` arrays
-- Generate module registration functions
+**Developer B: Build System Integration**
+- Create CMakeLists.txt or Makefile for Phase 2C
+- Integrate Phase 2B LLVM IR output with compilation pipeline
+- Handle RV32 vs RV64 architecture selection
+- Add vxbin.py invocation rules
 
 **Thursday-Friday: Integration Testing**
 - Link thread model + memory model modules
 - Test combined pass on simple kernels
+- Compile LLVM IR to binaries via Phase 2C
 - Fix integration issues
 - Begin end-to-end testing
 
 ### Week 5: End-to-End Testing & Validation
 
 **Monday-Wednesday: Complete Pipeline Testing**
-- Test full pipeline: `.hip` → `.vxbin`
-- Run all Phase 1 test kernels through compiler:
+- Test full pipeline: `.hip` → MLIR → LLVM IR → **Phase 2C binaries** → execution
+- Validate Phase 2C binary generation:
+  - Host binary links correctly with libvortex.so
+  - Kernel .vxbin format matches standard Vortex binaries
+  - Disassembly shows valid RISC-V instructions
+- Run all Phase 1 test kernels through complete compiler:
   - `vecadd_test` - Vector addition
   - `sgemm_test` - Matrix multiplication
   - `dotproduct_test` - Dot product
@@ -867,19 +1222,20 @@ llvm.call @vx_mem_free(%buffer_handle) : (!llvm.ptr) -> i32
   - `fence_test` - Memory fences
   - `cta_test` - Cooperative thread arrays
   - And 7 more tests...
+- Execute on Vortex simulator (VORTEX_DRIVER=simx)
 - Compare outputs with Phase 1 manually-written kernels
-- Performance validation
+- Performance validation against Phase 1 baselines
 
 **Thursday: Bug Fixes & Optimization**
 - Address any test failures
-- Performance profiling
-- Code optimization
-- Documentation updates
+- Fix Phase 2C build system issues
+- Performance profiling and optimization
+- Documentation updates (Phase 2C usage guide)
 
 **Friday: Final Review & Delivery**
-- Final code review
+- Final code review (Phase 2B + Phase 2C)
 - Documentation completion
-- Prepare demo
+- Prepare demo (.hip source → execution)
 - Project retrospective
 
 ---
@@ -932,16 +1288,22 @@ llvm.call @vx_mem_free(%buffer_handle) : (!llvm.ptr) -> i32
 - ✅ Both modules independently validated
 - ✅ Code reviewed and documented
 
-### Week 4 Milestone: Integrated Pass Complete
-- ✅ Combined pass compiles successfully
-- ✅ Integration tests pass
+### Week 4 Milestone: Integrated Pass + Phase 2C Setup Complete
+- ✅ Combined Phase 2B pass compiles successfully
+- ✅ Integration tests pass (Phase 2B generates valid LLVM IR)
 - ✅ Metadata generation works
-- ✅ Simple HIP kernels compile to Vortex binaries
+- ✅ Phase 2C toolchain configured (llvm-vortex, RISC-V toolchain)
+- ✅ Phase 2C can compile host LLVM IR → x86 executable
+- ✅ Phase 2C can compile kernel LLVM IR → .vxbin binary
+- ✅ Simple HIP kernels compile through complete pipeline (.hip → .vxbin)
 
 ### Week 5 Milestone: Full Pipeline Validated
-- ✅ All Phase 1 tests pass with compiled kernels
+- ✅ All Phase 1 tests pass with Phase 2C-compiled kernels
+- ✅ Generated binaries execute correctly on Vortex simulator
+- ✅ Binary format validated (.vxbin matches standard Vortex format)
 - ✅ Performance meets or exceeds Phase 1 baselines
-- ✅ Documentation complete
+- ✅ Documentation complete (Phase 2B + Phase 2C)
+- ✅ Build system integrated with Vortex infrastructure
 - ✅ Code ready for production use
 
 ---
@@ -975,8 +1337,8 @@ llvm.call @vx_mem_free(%buffer_handle) : (!llvm.ptr) -> i32
 | **1** | Thread model design | Memory model design | HIP testing (4h), Infrastructure setup |
 | **2** | Thread ID implementation | Memory ops implementation | Code reviews, standup |
 | **3** | Sync primitives + Launch infrastructure + Argument marshaling + tests | HIP API lowering + tests | Code reviews, integration prep |
-| **4** | Metadata extraction + integration | HIP API testing + integration | Integration, combined testing |
-| **5** | End-to-end testing | End-to-end testing | Full pipeline validation, delivery |
+| **4** | Metadata extraction + integration | Build system integration (Phase 2C) | Phase 2C toolchain setup, combined testing |
+| **5** | End-to-end testing + Phase 2C validation | End-to-end testing + Phase 2C validation | Full pipeline validation (.hip → .vxbin → execution) |
 
 **Total Duration:** 5 weeks
 **Total Custom Code:** ~650-750 lines (~350-400 per developer) + ~200 lines shared infrastructure
