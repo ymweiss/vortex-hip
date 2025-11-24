@@ -87,3 +87,9 @@ typedef int hipError_t;
 typedef int cudaError_t;
 #define hipSuccess 0
 #define cudaSuccess 0
+
+// ------------------------------------------------------------------
+// 7. Device-side printf support
+// Needed for kernel code that uses printf
+// ------------------------------------------------------------------
+extern "C" __device__ int printf(const char*, ...);
