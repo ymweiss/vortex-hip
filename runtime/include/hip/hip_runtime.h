@@ -34,8 +34,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Include Vortex runtime API
-#include <vortex.h>
+// Clang CUDA built-in variables (threadIdx, blockIdx, blockDim, gridDim)
+// CRITICAL: Must include this for Polygeist to recognize GPU built-ins
+#include "__clang_cuda_builtin_vars.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +55,7 @@ typedef enum hipError_t {
     hipErrorNoDevice = 100,
     hipErrorInvalidDevice = 101,
     hipErrorInvalidMemcpyDirection = 21,
+    hipErrorNotSupported = 801,
     hipErrorLaunchFailure = 719,
     hipErrorUnknown = 999
 } hipError_t;
@@ -85,139 +87,25 @@ typedef struct dim3 {
 // Thread Index Built-ins (Device-Side)
 //=============================================================================
 
-// These are handled by Polygeist's --cuda-lower flag
-// They get converted to gpu.thread_id, gpu.block_id, etc. in MLIR
-// Our GPUToVortexLLVM pass then converts those to vx_* calls
-
-#ifdef __CUDA_ARCH__  // Device code
-#define threadIdx __builtin_threadIdx
-#define blockIdx  __builtin_blockIdx
-#define blockDim  __builtin_blockDim
-#define gridDim   __builtin_gridDim
-#endif
+// threadIdx, blockIdx, blockDim, gridDim are provided by __clang_cuda_builtin_vars.h
+// Polygeist's --cuda-lower flag converts them to gpu.thread_id, gpu.block_id, etc.
+// Our ConvertGPUToVortex pass then converts those to vx_* calls
 
 //=============================================================================
 // Device Management (Host-Side)
 //=============================================================================
 
-// Global device handle for simplified API
-// In a full implementation, this would use thread-local storage
-extern vx_device_h __hip_vortex_device;
-
-static inline hipError_t hipInit(unsigned int flags) {
-    (void)flags;  // Unused
-    return hipSuccess;
-}
-
-static inline hipError_t hipSetDevice(int deviceId) {
-    if (vx_dev_open(&__hip_vortex_device) != 0) {
-        return hipErrorNoDevice;
-    }
-    (void)deviceId;  // Single device for now
-    return hipSuccess;
-}
-
-static inline hipError_t hipDeviceSynchronize(void) {
-    if (vx_ready_wait(__hip_vortex_device, -1) != 0) {
-        return hipErrorLaunchFailure;
-    }
-    return hipSuccess;
-}
+hipError_t hipInit(unsigned int flags);
+hipError_t hipSetDevice(int deviceId);
+hipError_t hipDeviceSynchronize(void);
 
 //=============================================================================
 // Memory Management (Host-Side)
 //=============================================================================
 
-/**
- * hipMalloc - Allocate device memory
- *
- * Maps to: vx_mem_alloc()
- *
- * Example transformation:
- *   Source:  hipMalloc(&d_ptr, 1024);
- *   Inline:  vx_mem_alloc(__hip_vortex_device, 1024, (uint64_t*)&d_ptr);
- *   Polygeist sees: func.call @vx_mem_alloc(...)
- */
-static inline hipError_t hipMalloc(void** ptr, size_t size) {
-    if (ptr == NULL) {
-        return hipErrorInvalidValue;
-    }
-
-    uint64_t dev_ptr = 0;
-    if (vx_mem_alloc(__hip_vortex_device, size, &dev_ptr) != 0) {
-        return hipErrorOutOfMemory;
-    }
-
-    *ptr = (void*)(uintptr_t)dev_ptr;
-    return hipSuccess;
-}
-
-/**
- * hipFree - Free device memory
- *
- * Maps to: vx_mem_free()
- */
-static inline hipError_t hipFree(void* ptr) {
-    if (ptr == NULL) {
-        return hipSuccess;  // Freeing NULL is valid
-    }
-
-    uint64_t dev_ptr = (uint64_t)(uintptr_t)ptr;
-    if (vx_mem_free(__hip_vortex_device, dev_ptr) != 0) {
-        return hipErrorInvalidValue;
-    }
-
-    return hipSuccess;
-}
-
-/**
- * hipMemcpy - Copy memory between host and device
- *
- * Maps to:
- *   - vx_copy_to_dev() for Host → Device
- *   - vx_copy_from_dev() for Device → Host
- *
- * Example transformation:
- *   Source:  hipMemcpy(d_ptr, h_ptr, 1024, hipMemcpyHostToDevice);
- *   Inline:  vx_copy_to_dev(__hip_vortex_device, (uint64_t)d_ptr, h_ptr, 1024);
- *   Polygeist sees: func.call @vx_copy_to_dev(...)
- */
-static inline hipError_t hipMemcpy(void* dst, const void* src,
-                                    size_t sizeBytes, hipMemcpyKind kind) {
-    if (dst == NULL || src == NULL) {
-        return hipErrorInvalidValue;
-    }
-
-    int result = 0;
-
-    switch (kind) {
-        case hipMemcpyHostToDevice: {
-            uint64_t dev_dst = (uint64_t)(uintptr_t)dst;
-            result = vx_copy_to_dev(__hip_vortex_device, dev_dst, src, sizeBytes);
-            break;
-        }
-        case hipMemcpyDeviceToHost: {
-            uint64_t dev_src = (uint64_t)(uintptr_t)src;
-            result = vx_copy_from_dev(__hip_vortex_device, dst, dev_src, sizeBytes);
-            break;
-        }
-        case hipMemcpyDeviceToDevice:
-            // TODO: Implement device-to-device copy if Vortex supports it
-            return hipErrorNotSupported;
-        case hipMemcpyHostToHost:
-            // Use standard memcpy for host-to-host
-            memcpy(dst, src, sizeBytes);
-            return hipSuccess;
-        default:
-            return hipErrorInvalidMemcpyDirection;
-    }
-
-    if (result != 0) {
-        return hipErrorUnknown;
-    }
-
-    return hipSuccess;
-}
+hipError_t hipMalloc(void** ptr, size_t size);
+hipError_t hipFree(void* ptr);
+hipError_t hipMemcpy(void* dst, const void* src, size_t sizeBytes, hipMemcpyKind kind);
 
 //=============================================================================
 // Kernel Launch (Host-Side)
@@ -228,11 +116,29 @@ static inline hipError_t hipMemcpy(void* dst, const void* src,
  *
  * This syntax is handled by Polygeist's --cuda-lower flag.
  * Polygeist converts it to gpu.launch_func in MLIR.
- * Our GPUToVortexLLVM pass then converts that to vx_upload_kernel_bytes(),
+ * Our ConvertGPUToVortex pass then converts that to vx_upload_kernel_bytes(),
  * vx_start(), and vx_ready_wait().
- *
- * No inline implementation needed here - handled by compiler transformation.
  */
+
+// Required for <<<>>> syntax support
+typedef struct cudaStream *cudaStream_t;
+typedef struct hipStream *hipStream_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int cudaConfigureCall(dim3 gridSize, dim3 blockSize,
+                      size_t sharedSize = 0,
+                      cudaStream_t stream = 0);
+
+int hipConfigureCall(dim3 gridSize, dim3 blockSize,
+                     size_t sharedSize = 0,
+                     hipStream_t stream = 0);
+
+#ifdef __cplusplus
+}
+#endif
 
 //=============================================================================
 // Device Synchronization (Device-Side)
@@ -243,32 +149,42 @@ static inline hipError_t hipMemcpy(void* dst, const void* src,
  *
  * This is handled by Polygeist's --cuda-lower flag.
  * It gets converted to gpu.barrier in MLIR.
- * Our GPUToVortexLLVM pass then converts it to vx_barrier().
- *
- * No inline implementation needed - handled by compiler.
+ * Our ConvertGPUToVortex pass then converts it to vx_barrier().
  */
-#ifdef __CUDA_ARCH__
+#ifdef __cplusplus
+extern "C" {
+#endif
 void __syncthreads(void);
+#ifdef __cplusplus
+}
 #endif
 
 //=============================================================================
 // Error Handling
 //=============================================================================
 
-static inline const char* hipGetErrorString(hipError_t error) {
-    switch (error) {
-        case hipSuccess: return "hipSuccess";
-        case hipErrorInvalidValue: return "hipErrorInvalidValue";
-        case hipErrorOutOfMemory: return "hipErrorOutOfMemory";
-        case hipErrorNotInitialized: return "hipErrorNotInitialized";
-        case hipErrorDeinitialized: return "hipErrorDeinitialized";
-        case hipErrorNoDevice: return "hipErrorNoDevice";
-        case hipErrorInvalidDevice: return "hipErrorInvalidDevice";
-        case hipErrorInvalidMemcpyDirection: return "hipErrorInvalidMemcpyDirection";
-        case hipErrorLaunchFailure: return "hipErrorLaunchFailure";
-        default: return "hipErrorUnknown";
-    }
-}
+const char* hipGetErrorString(hipError_t error);
+
+//=============================================================================
+// Device Properties (Host-Side)
+//=============================================================================
+
+typedef struct hipDeviceProp_t {
+    char name[256];
+    size_t totalGlobalMem;
+    size_t sharedMemPerBlock;
+    int regsPerBlock;
+    int warpSize;
+    int maxThreadsPerBlock;
+    int maxThreadsDim[3];
+    int maxGridSize[3];
+    int clockRate;
+    int multiProcessorCount;
+    int major;
+    int minor;
+} hipDeviceProp_t;
+
+hipError_t hipGetDeviceProperties(hipDeviceProp_t* prop, int deviceId);
 
 #ifdef __cplusplus
 }
@@ -283,6 +199,12 @@ static inline const char* hipGetErrorString(hipError_t error) {
 #define __global__ __attribute__((global))
 #define __device__ __attribute__((device))
 #define __host__ __attribute__((host))
+#define __shared__ __attribute__((shared))
+
+// hipLaunchKernelGGL - Macro for explicit kernel launch
+// This expands to the <<<>>> syntax which Polygeist handles
+#define hipLaunchKernelGGL(kernelName, numBlocks, numThreads, memPerBlock, streamId, ...) \
+    kernelName<<<numBlocks, numThreads, memPerBlock, streamId>>>(__VA_ARGS__)
 #endif
 
 #endif // HIP_RUNTIME_H
