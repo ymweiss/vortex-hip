@@ -3,6 +3,20 @@
 #include "hip_runtime_vortex/hip_runtime.h"
 #include <stdint.h>
 
+#ifndef TYPE
+#define TYPE float
+#endif
+#define FLOAT_ULP 6
+#define HIP_CHECK(call) \
+  do { \
+    hipError_t err = call; \
+    if (err != hipSuccess) { \
+      std::cerr << "HIP error in " << __FILE__ << ":" << __LINE__ << ": " \
+                << hipGetErrorString(err) << std::endl; \
+      exit(1); \
+    } \
+  } while (0)
+
 __global__ void vecadd_kernel(TYPE* src0, TYPE* src1, TYPE* dst, uint32_t num_points) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < num_points) {
