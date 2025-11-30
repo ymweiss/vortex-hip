@@ -4,10 +4,12 @@
 
 // ------------------------------------------------------------------
 // 1. Clang CUDA Built-in Variables
-// CRITICAL: Must use Clang's builtin header for Polygeist to recognize
-// threadIdx, blockIdx, etc. as GPU operations (not regular variables)
+// Only include for device compilation (__CUDA__ defined by clang CUDA frontend)
+// This provides threadIdx, blockIdx, etc. as GPU operations
 // ------------------------------------------------------------------
+#ifdef __CUDA__
 #include "__clang_cuda_builtin_vars.h"
+#endif
 
 // ------------------------------------------------------------------
 // 2. Attributes
