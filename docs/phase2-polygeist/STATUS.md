@@ -1,7 +1,9 @@
 # Polygeist for HIP-to-Vortex: Current Status
 
-**Date:** November 10, 2025
-**Status:** ✅ Built, Validated, Ready for Implementation
+**Date:** November 16, 2025
+**Status:** 🟢 Phase 2B In Progress - GPU-to-Vortex Pass 70% Complete
+
+**See Also:** [PHASE2B_A_STATUS.md](PHASE2B_A_STATUS.md) - Detailed Phase 2B Developer A progress
 
 ---
 
@@ -243,24 +245,42 @@ __global__ void vector_add(float *a, float *b, float *c, int n) {
 
 ---
 
-## Next Steps
+## Phase 2B Progress (November 2025)
 
-### Immediate Actions
+### Developer A Status (70% Complete)
 
-**For Person A (Phase 1):**
-1. Set up Phase 1 development environment
-2. Implement GPUToVortexLLVM pass skeleton (~500 lines)
-   - Map `gpu.thread_id` → `call @vx_thread_id()`
-   - Map `gpu.block_id` → compute from Vortex IDs
-   - Map `gpu.barrier` → `call @vx_barrier()`
-3. Test with plain C++ kernels
-4. Validate end-to-end: C++ → SCF → GPU → LLVM → Vortex
+**✅ Completed:**
+- Thread & Block ID mapping (threadIdx, blockIdx) via TLS globals
+- Block & Grid dimension queries (blockDim, gridDim)
+- Barrier synchronization (gpu.barrier → vx_barrier)
+- FileCheck test suite (185 lines, all passing)
+- Build infrastructure optimizations
 
-**For Person B (Phase 2A - Concurrent):**
-1. Create simple HIP test kernel
-2. Test with `hip_minimal.h` and `--cuda-lower`
-3. Document Polygeist's GPU dialect output
-4. Report findings (2 hours total)
+**🔄 In Progress:**
+- Metadata extraction design for kernel arguments
+
+**⏸️ Pending:**
+- Kernel launch infrastructure (gpu.launch_func lowering)
+- Argument struct generation
+- End-to-end integration testing
+
+**Branch:** `yaakov/phase-2B-A` (vortex_hip and Polygeist repos)
+**Pass Location:** `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp` (330/520 lines)
+
+**See:** [PHASE2B_A_STATUS.md](PHASE2B_A_STATUS.md) for detailed implementation notes
+
+### Next Immediate Actions
+
+**Developer A:**
+1. Finalize metadata extraction approach (function attributes vs global constants)
+2. Implement LaunchFuncOpLowering pattern (~150 lines)
+3. Test with simple HIP programs
+4. Coordinate with Developer B on argument struct layout
+
+**Developer B:**
+1. Begin memory operations implementation (Developer B branch)
+2. Implement shared memory allocation patterns
+3. Coordinate on kernel argument structure
 
 ### Decision Points
 
