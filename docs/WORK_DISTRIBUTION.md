@@ -2,23 +2,41 @@
 
 **Project:** HIP-to-Vortex Compiler Phase 2
 **Duration:** 5 weeks
-**Status:** Ready to begin
+**Status:** Phase 2B complete, split compilation validated
 
 ---
 
 ## Executive Summary
 
-The Phase 2 compiler work requires implementing **one custom MLIR pass** (~500 lines) that converts GPU dialect operations to Vortex runtime calls. Standard MLIR passes handle all SCF→GPU conversion, eliminating the need for custom loop parallelization or kernel detection code.
+Phase 2 uses a **split compilation model** that separates host and kernel compilation:
 
-The work is split into two balanced modules:
-- **Developer A:** Thread Model & Synchronization (~250-300 lines)
-  - 🔵 **KERNEL-SIDE:** Thread/block ID mapping, synchronization (device code)
-  - 🟢 **HOST-SIDE:** Kernel launch infrastructure, metadata extraction (host code)
-- **Developer B:** Memory Operations & Argument Marshaling (~250-300 lines)
-  - 🔵 **KERNEL-SIDE:** Memory operations, address spaces (device code)
-  - 🟢 **HOST-SIDE:** Argument struct packing (host code)
+- **Host Code:** Compiled with standard g++, links against `libhip_vortex_runtime.a` + `libvortex.so`
+- **Kernel Code:** Compiled with Polygeist pipeline, produces `.vxbin` + `.meta.json`
 
-Both developers contribute equally to infrastructure setup, testing, and integration.
+This approach is simpler and more robust than trying to compile both host and kernel through a unified MLIR pipeline.
+
+### What's Complete
+
+✅ **HIP Runtime Library** (`libhip_vortex_runtime.a`)
+- All HIP memory APIs (hipMalloc, hipFree, hipMemcpy, hipMemset)
+- All HIP device APIs (hipSetDevice, hipGetDeviceProperties, hipDeviceSynchronize)
+- Error handling APIs (hipGetErrorString, hipGetLastError)
+- Kernel launch infrastructure (hipLaunchKernelGGL, hipRegisterKernel)
+
+✅ **Kernel Compilation Pipeline**
+- Polygeist converts HIP kernels to MLIR GPU dialect
+- ConvertGPUToVortex pass lowers to Vortex intrinsics
+- 21/22 kernel-only files convert successfully
+
+✅ **Split Compilation Validated**
+- Host compiles with standard g++
+- test_native_kernel passes with Vortex vecadd kernel
+
+### Remaining Work
+
+📋 **Kernel Metadata Emission**
+- Output `.meta.json` alongside `.vxbin` during kernel compilation
+- Runtime parses metadata for automatic argument marshaling
 
 ### Kernel-Side vs Host-Side Work
 
@@ -32,62 +50,66 @@ Both developers contribute equally to infrastructure setup, testing, and integra
 
 Each compiler transformation targets one of these two compilation units.
 
-### Compilation Pipeline with Kernel/Host Annotations
+### Split Compilation Pipeline
 
 ```
-HIP Source (.hip)
-    ↓
-[Polygeist --cuda-lower]
-    ↓
-MLIR GPU Dialect
-    │
-    ├─────────────────────────────────────┬────────────────────────────────────┐
-    │                                     │                                    │
-    ↓                                     ↓                                    ↓
-gpu.module (KERNEL-SIDE 🔵)      func.func (HOST-SIDE 🟢)           gpu.launch_func (HOST-SIDE 🟢)
-- gpu.thread_id                  - arith operations                - Grid/block dimensions
-- gpu.block_id                   - scf.for loops                   - Kernel arguments
-- gpu.barrier                    - memref operations
-- gpu.alloc (shared)             - function calls
-    │                                     │                                    │
-    ↓                                     ↓                                    ↓
-[GPUToVortexLLVM Pass]           [GPUToVortexLLVM Pass]            [GPUToVortexLLVM Pass]
-    │                                     │                                    │
-    ↓                                     ↓                                    ↓
-DEVELOPER A (KERNEL-SIDE):       DEVELOPER B (HOST-SIDE):          DEVELOPER A (HOST-SIDE):
-- vx_thread_id()                 - (Pass through, handled           - vx_upload_kernel_bytes()
-- vx_warp_id()                     by header inlines)               - vx_upload_bytes(args_struct)
-- vx_barrier()                                                      - vx_start()
-                                                                    - vx_ready_wait()
-DEVELOPER B (KERNEL-SIDE):
-- __local_mem()
-- Address space attrs
-    │                                     │                                    │
-    ↓                                     ↓                                    ↓
-LLVM Dialect (RISC-V target)     LLVM Dialect (x86 target)          LLVM Dialect (x86 target)
-    │                                     │                                    │
-    └─────────────────────────────────────┴────────────────────────────────────┘
-                                          │
-                    ┌─────────────────────┴─────────────────────┐
-                    ↓                                           ↓
-            [mlir-translate]                            [mlir-translate]
-                    ↓                                           ↓
-            LLVM IR (RISC-V)                            LLVM IR (x86)
-                    ↓                                           ↓
-            [llvm-vortex clang++]                       [clang++]
-                    ↓                                           ↓
-            kernel.vxbin                                host_binary
-            (RISC-V binary)                             (x86 ELF)
-            - vx_thread_id calls                        - vx_start calls
-            - vx_barrier calls                          - vx_upload_bytes calls
-            - TLS variable access                       - Links to libvortex.so
-                    │                                           │
-                    └─────────────────┬─────────────────────────┘
-                                      ↓
-                            Runtime Execution:
-                            host_binary loads kernel.vxbin
-                            and executes on Vortex device
+┌─────────────────────────────────────────────────────────────────────┐
+│                    HIP Source (.hip)                                │
+│  ┌─────────────────────────┐     ┌─────────────────────────────┐   │
+│  │  __global__ kernel()    │     │  int main() {               │   │
+│  │  {                      │     │    hipMalloc(&d_ptr, size); │   │
+│  │    // kernel code       │     │    hipLaunchKernelGGL(...); │   │
+│  │  }                      │     │    hipDeviceSynchronize();  │   │
+│  └─────────────────────────┘     └─────────────────────────────┘   │
+└──────────────┬───────────────────────────────┬──────────────────────┘
+               │                               │
+     ┌─────────┴─────────┐           ┌─────────┴─────────┐
+     │  hip_splitter.py  │           │  (keep as-is)     │
+     │  Extract kernels  │           │                   │
+     └─────────┬─────────┘           └─────────┬─────────┘
+               │                               │
+               ▼                               ▼
+┌──────────────────────────────┐   ┌──────────────────────────────────┐
+│    KERNEL COMPILATION        │   │      HOST COMPILATION            │
+│    (Polygeist Pipeline)      │   │      (Standard C++)              │
+│    🔵 KERNEL-SIDE            │   │      🟢 HOST-SIDE                │
+├──────────────────────────────┤   ├──────────────────────────────────┤
+│                              │   │                                  │
+│ 1. cgeist --cuda-lower       │   │ 1. g++ -std=c++17                │
+│    - HIP → MLIR GPU dialect  │   │    - Standard C++ compilation   │
+│                              │   │    - Include hip_vortex_runtime │
+│ 2. polygeist-opt             │   │                                  │
+│    - GPUToVortex pass        │   │ 2. Link libraries:               │
+│    - Thread ID → vx_thread_id│   │    - libhip_vortex_runtime.a    │
+│    - Barrier → vx_barrier    │   │    - libvortex.so               │
+│    - printf → vx_printf      │   │                                  │
+│                              │   │ HIP API → Vortex mapping:        │
+│ 3. mlir-translate            │   │    hipMalloc → vx_mem_alloc     │
+│    - MLIR → LLVM IR          │   │    hipMemcpy → vx_copy_to_dev   │
+│                              │   │    hipLaunchKernelGGL → vx_start│
+│ 4. llvm-vortex               │   │    hipDeviceSynchronize →       │
+│    - LLVM IR → RISC-V        │   │                  vx_ready_wait  │
+│                              │   │                                  │
+│ 5. Emit metadata (TODO)      │   │                                  │
+│    - kernel.meta.json        │   │                                  │
+└──────────────┬───────────────┘   └────────────────┬─────────────────┘
+               │                                    │
+               ▼                                    ▼
+       kernel.vxbin                          host_executable
+       kernel.meta.json                      (links libhip_vortex_runtime)
+               │                                    │
+               └────────────────┬───────────────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │   RUNTIME EXECUTION   │
+                    │   Host loads kernel   │
+                    │   binary at runtime   │
+                    │   via hipRegisterKernel│
+                    └───────────────────────┘
 ```
+
+**Key Insight:** Host code does NOT go through MLIR. It uses standard C++ compilation with our HIP runtime library that maps HIP API calls directly to Vortex API calls.
 
 ---
 
@@ -136,191 +158,156 @@ Vortex RISC-V Binary (.vxbin)
 
 ## Runtime Library Architecture
 
-The system uses **two separate runtime libraries** for different purposes:
+The split compilation model uses **two runtime libraries**:
 
 ### 1. Vortex Runtime Library (Core Runtime)
 **Purpose:** Low-level device control and kernel execution
-**Location:** Vortex repository `libvortex.so`
-**Used by:** Compiled kernels (device code) AND kernel launcher (host code)
+**Location:** `vortex/build/runtime/libvortex.so`
+**Used by:** Both host code (via HIP runtime) and kernel code (device intrinsics)
 **API:**
-- **Host-side:** `vx_dev_open()`, `vx_mem_alloc()`, `vx_upload_kernel_bytes()`, `vx_start()`, `vx_ready_wait()`
+- **Host-side:** `vx_dev_open()`, `vx_mem_alloc()`, `vx_upload_kernel_file()`, `vx_start()`, `vx_ready_wait()`
 - **Device-side:** `vx_thread_id()`, `vx_warp_id()`, `vx_barrier()`
 
-### 2. HIP Runtime Library (Optional Binary Compatibility Layer)
-**Purpose:** Binary compatibility for pre-compiled x86 host code that was compiled against HIP API
-**Location:** `runtime/libhip_vortex.so` (Phase 3 work, optional)
-**Used by:** Pre-compiled applications (binaries without source), third-party binary libraries
-**API:** `hipMalloc()`, `hipMemcpy()`, `hipLaunchKernel()`, `hipDeviceSynchronize()`, etc.
-**Note:** NOT needed when compiling from HIP source - our compiler transforms HIP syntax to Vortex calls directly
-**Important:** Cannot provide pre-compiled kernel compatibility - HIP kernels compile to architecture-specific binaries (AMD GCN, NVIDIA PTX) that are incompatible with Vortex RISC-V
+### 2. HIP Vortex Runtime Library (HIP API Layer) ✅ IMPLEMENTED
+**Purpose:** Map HIP API calls to Vortex API for host code
+**Location:** `runtime/hip_vortex_runtime/lib/libhip_vortex_runtime.a`
+**Used by:** Host code compiled with standard g++
+**API:**
+```
+HIP API                  →  Vortex API
+─────────────────────────  ──────────────────────
+hipSetDevice()           →  vx_dev_open()
+hipGetDeviceProperties() →  vx_dev_caps()
+hipMalloc()              →  vx_mem_alloc()
+hipFree()                →  vx_mem_free()
+hipMemcpy()              →  vx_copy_to_dev() / vx_copy_from_dev()
+hipMemset()              →  vx_copy_to_dev() (filled buffer)
+hipDeviceSynchronize()   →  vx_ready_wait()
+hipGetErrorString()      →  (internal error table)
+hipGetLastError()        →  (internal error state)
+hipRegisterKernel()      →  vx_upload_kernel_file()
+hipLaunchKernelGGL()     →  vx_start()
+```
 
-### Two Usage Models
+**Build:**
+```bash
+cd runtime/hip_vortex_runtime && make
+# Output: lib/libhip_vortex_runtime.a
+```
 
-#### Model 1: Direct Vortex (Phase 2 - What We're Building)
+### Split Compilation Usage Model (Phase 2 - IMPLEMENTED)
+
 ```
 ┌─────────────────────────────────────────────────────┐
 │ HIP Source (.hip)                                   │
 │  __global__ void kernel() { threadIdx.x; }          │
 │  int main() {                                       │
 │    hipMalloc(&ptr, size);                           │
-│    kernel<<<grid, block>>>(...);                    │
+│    hipLaunchKernelGGL(kernel, grid, block, ...);   │
 │    hipDeviceSynchronize();                          │
 │  }                                                  │
 └──────────────────┬──────────────────────────────────┘
-                   │ Our compiler transforms HIP→Vortex:
-                   │  hipMalloc() → vx_mem_alloc()
-                   │  kernel<<<>>> → vx_upload/start/wait()
-                   │  hipDeviceSynchronize() → vx_ready_wait()
-                   │  threadIdx.x → vx_thread_id()
-                   ↓
-┌─────────────────────────────────────────────────────┐
-│ Compiled Binary (links directly to libvortex.so)   │
-│  - Host code: Calls vx_* functions directly         │
-│  - Device code: Calls vx_* intrinsics               │
-└──────────────────┬──────────────────────────────────┘
-                   │ Links against & calls
-                   ↓
-┌─────────────────────────────────────────────────────┐
-│ Vortex Runtime Library (libvortex.so)               │
-│  Host: vx_dev_open(), vx_upload_kernel_bytes()      │
-│  Device: vx_thread_id(), vx_barrier()               │
-└──────────────────┬──────────────────────────────────┘
-                   │ Controls
-                   ↓
-┌─────────────────────────────────────────────────────┐
-│ Vortex Hardware / Simulator                         │
-└─────────────────────────────────────────────────────┘
-```
-
-**In Phase 2:** Our compiler transforms ALL HIP constructs (both host API calls like `hipMalloc()` and device syntax like `threadIdx.x`) to Vortex runtime calls. The generated code calls `libvortex.so` directly. No HIP runtime library is needed.
-
-#### Model 2: Binary Compatibility (Phase 3 - Future Work, Optional)
-```
-┌─────────────────────────────────────────────────────┐
-│ Pre-compiled Application (x86 binary)              │
-│  - Was compiled against standard HIP API           │
-│  - No source code available                        │
-│  hipMalloc(&ptr, size);                            │
-│  hipLaunchKernel(...);                             │
-│  hipDeviceSynchronize();                           │
-└──────────────────┬──────────────────────────────────┘
-                   │ Links against (at runtime)
-                   ↓
-┌─────────────────────────────────────────────────────┐
-│ HIP Runtime Library (libhip_vortex.so)              │
-│  hipMalloc() → vx_mem_alloc()                       │
-│  hipLaunchKernel() → vx_upload/start/wait           │
-│  - Only for HOST code compatibility                │
-│  - Kernels must still be recompiled to .vxbin      │
-└──────────────────┬──────────────────────────────────┘
-                   │ Calls
-                   ↓
-┌─────────────────────────────────────────────────────┐
-│ Vortex Runtime (libvortex.so)                       │
-│  Loads pre-compiled .vxbin kernels                 │
-└──────────────────┬──────────────────────────────────┘
                    │
-                   ↓
-┌─────────────────────────────────────────────────────┐
-│ Vortex Hardware                                     │
-└─────────────────────────────────────────────────────┘
+     ┌─────────────┴─────────────┐
+     │                           │
+     ▼                           ▼
+┌────────────────────┐   ┌────────────────────────────┐
+│ KERNEL EXTRACTION  │   │ HOST COMPILATION           │
+│ hip_splitter.py    │   │ g++ -std=c++17             │
+└─────────┬──────────┘   │ -I hip_vortex_runtime/inc  │
+          │              │ -L hip_vortex_runtime/lib  │
+          ▼              │ -lhip_vortex_runtime       │
+┌────────────────────┐   │ -L vortex/build/runtime    │
+│ KERNEL COMPILATION │   │ -lvortex                   │
+│ Polygeist pipeline │   └─────────────┬──────────────┘
+│ → kernel.vxbin     │                 │
+│ → kernel.meta.json │                 ▼
+└─────────┬──────────┘   ┌────────────────────────────┐
+          │              │ Host Executable (x86)      │
+          │              │ - Links libhip_vortex_runtime│
+          │              │ - Links libvortex.so       │
+          │              └─────────────┬──────────────┘
+          │                            │
+          └──────────────┬─────────────┘
+                         │
+                         ▼
+              ┌──────────────────────┐
+              │ RUNTIME EXECUTION    │
+              │ 1. hipRegisterKernel │
+              │    loads kernel.vxbin│
+              │ 2. hipLaunchKernelGGL│
+              │    → vx_start()      │
+              │ 3. hipDeviceSynchronize│
+              │    → vx_ready_wait() │
+              └──────────────────────┘
 ```
 
-**Phase 3 (future):** Build a HIP compatibility library for pre-compiled host binaries.
-**Critical limitation:** Kernels must still be recompiled from HIP source to Vortex RISC-V - no architecture-independent HIP kernel binary format exists.
+**Key Benefits of Split Compilation:**
+- Host uses standard g++ - no custom compiler needed
+- Kernel compilation isolated - easier debugging
+- Runtime library is simple C++ - easy to maintain
+- Industry standard approach (CUDA/HIP/OpenCL all do this)
 
 ### HIP API Implementation Strategy
 
-**IMPORTANT:** HIP API calls (`hipMalloc`, `hipMemcpy`, `hipDeviceSynchronize`) will need to be lowered by the compiler pass in Phase 2B (30% remaining work). They are NOT handled by header-based inlines.
+**With split compilation, HIP API calls are handled by the runtime library, NOT the compiler.**
 
-**What Polygeist actually does:**
-1. Polygeist converts `<<<>>>` kernel launch syntax to `gpu.launch_func` operations ✓
-2. Polygeist generates `func.func` for host launch wrappers containing `gpu.launch_func` ✓
-3. Polygeist converts kernel functions to `gpu.func` with `gpu.thread_id`, `gpu.block_id`, etc. ✓
-4. **Polygeist does NOT inline or lower HIP API calls** - they remain as function calls in MLIR
+The host code is compiled with standard g++ and links against `libhip_vortex_runtime.a`, which provides implementations of all HIP API functions that delegate to Vortex API.
 
-**Phase 2B remaining work (30%):**
-The GPUToVortexLLVM pass must lower HIP host API calls:
-```mlir
-// Input: MLIR func.func with HIP API calls
-func.call @hipMalloc(%ptr, %size)
-func.call @hipMemcpy(%dst, %src, %size, %kind)
-func.call @hipDeviceSynchronize()
+**Host Compilation Flow:**
+```bash
+# Compile host code with standard g++
+g++ -std=c++17 \
+    -I runtime/hip_vortex_runtime/include \
+    -I vortex/runtime/include \
+    -I vortex/build/hw \
+    host_code.cpp \
+    -L runtime/hip_vortex_runtime/lib -lhip_vortex_runtime \
+    -L vortex/build/runtime -lvortex \
+    -o host_executable
 
-// Output: LLVM dialect with Vortex runtime calls
-llvm.call @vx_mem_alloc(%device, %size, %ptr)
-llvm.call @vx_copy_to_dev(%device, %dst, %src, %size)  // or vx_copy_from_dev
-llvm.call @vx_ready_wait(%device, %timeout)
+# Run with library path
+LD_LIBRARY_PATH=vortex/build/runtime ./host_executable
 ```
 
-**Note:** Current test files (basic_kernel.hip, etc.) only contain kernel+launch wrapper, no hipMalloc/hipMemcpy calls, so this lowering is not yet tested.
-
-**Complete compilation flow:**
+**Kernel Compilation Flow:**
 ```bash
-# Step 1: Compile HIP source with Polygeist
-cgeist user_code.hip \
-    -I runtime/include \              # Our hip_runtime.h header
-    --cuda-lower \                    # Enable CUDA/HIP kernel lowering
+# Step 1: Extract kernel from HIP source
+python scripts/hip_splitter.py input.hip --output-dir kernels/
+
+# Step 2: Compile kernel with Polygeist
+cgeist kernels/input_kernel.hip \
+    -I runtime/include/hip \
+    --cuda-lower \
     -resource-dir $(clang -print-resource-dir) \
-    -S -o user_code.mlir
+    -S -o kernel.mlir
 
-# Result: MLIR with SCF and GPU dialects
-# - func.call @vx_mem_alloc (from hipMalloc via inline)
-# - gpu.launch_func (from <<<>>>)
-# - gpu.thread_id (from threadIdx in kernel)
-# - scf.for loops (from regular loops)
-
-# Step 2: Lower SCF to GPU dialect (if needed)
-mlir-opt user_code.mlir \
-    --convert-scf-to-cf \             # SCF to control flow
-    --convert-affine-for-to-gpu \     # Affine loops to GPU
-    -o user_code_gpu.mlir
-
-# Step 3: Lower GPU to Vortex LLVM (our custom pass)
-mlir-opt user_code_gpu.mlir \
-    --convert-gpu-to-vortex-llvm \    # Our custom pass
-    -o user_code_llvm.mlir
+# Step 3: Lower GPU dialect to Vortex
+polygeist-opt kernel.mlir \
+    --convert-gpu-to-vortex \
+    -o kernel_vortex.mlir
 
 # Step 4: Convert to LLVM IR
-mlir-translate user_code_llvm.mlir \
+mlir-translate kernel_vortex.mlir \
     --mlir-to-llvmir \
-    -o user_code.ll
+    -o kernel.ll
 
-# Step 5: Compile with llvm-vortex
-llvm-vortex/bin/clang user_code.ll \
+# Step 5: Compile to RISC-V binary
+llvm-vortex/bin/clang kernel.ll \
     -target riscv32 \
+    -march=rv32imaf \
     -o kernel.vxbin
 ```
 
-**Key compilation flags:**
+**Key Simplification:** By using split compilation:
+- No need to lower HIP API calls in MLIR pass
+- Host code uses standard C++ toolchain
+- Only kernel code goes through Polygeist
+- Runtime library handles all HIP→Vortex mapping
 
-1. **`-I runtime/include`** - Ensures our `hip/hip_runtime.h` is found
-2. **`--cuda-lower`** - Polygeist flag to convert CUDA/HIP kernel syntax to GPU dialect
-3. **`-resource-dir`** - Ensures Clang's builtin headers are available
-4. **`--convert-affine-for-to-gpu`** - Standard MLIR pass for loop parallelization (if needed)
+### What Our Compiler Pass Generates (Kernel-Side Only)
 
-**Note:** Polygeist already supports HIP kernel syntax via its CUDA support - HIP and CUDA use identical kernel syntax (`__global__`, `threadIdx`, `<<<>>>`).
-
-This is exactly how HIP works with ROCm and CUDA - backend-specific headers provide the implementation.
-
-### What Our Compiler Pass Generates
-
-The **GPUToVortexLLVM pass** generates two types of code:
-
-#### Host-Side Code (Kernel Launch)
-Converts `gpu.launch_func` to Vortex runtime calls:
-```mlir
-// Input: GPU Dialect
-gpu.launch_func @kernels::@myKernel
-    blocks in (%c256, %c1, %c1)
-    threads in (%c256, %c1, %c1)
-    args(%arg0 : memref<?xf32>)
-
-// Output: LLVM Dialect with Vortex runtime calls
-llvm.call @vx_upload_kernel_bytes(%device, %kernel_binary, %size)
-llvm.call @vx_start(%device)
-llvm.call @vx_ready_wait(%device, %timeout)
-```
+With split compilation, the **ConvertGPUToVortex pass** only handles kernel code (device-side). Host code is compiled separately with g++.
 
 #### Device-Side Code (Kernel Body)
 Converts GPU dialect operations to Vortex intrinsics:
@@ -337,13 +324,44 @@ gpu.barrier
 llvm.call @vx_barrier(%bar_id, %num_threads) : (i32, i32) -> ()
 ```
 
+#### Printf Lowering
+Transforms printf calls to vx_printf with core ID injection:
+```mlir
+// Input: printf("value=%d\n", x)
+// Output: vx_printf("cid=%d: value=%d\n", vx_core_id(), x)
+```
+
+#### Kernel Metadata Emission (TODO)
+The pass should also emit metadata for runtime argument marshaling:
+```json
+{
+  "kernel_name": "vecadd_kernel",
+  "arguments": [
+    {"name": "src0", "type": "ptr", "size": 8},
+    {"name": "src1", "type": "ptr", "size": 8},
+    {"name": "dst", "type": "ptr", "size": 8},
+    {"name": "n", "type": "u32", "size": 4}
+  ]
+}
+```
+
 ---
 
-## Developer A: Thread Model & Kernel Launch
+## Remaining Work Distribution
 
-**Estimated Time:** 2-3 weeks
-**Estimated LOC:** ~350-400 lines + tests
-**Scope:** 🔵 **KERNEL-SIDE** (device code) + 🟢 **HOST-SIDE** (launch infrastructure + argument marshaling)
+With split compilation, most host-side work is complete (HIP runtime library). The remaining work focuses on:
+
+1. **Kernel Metadata Emission** - Output argument info during kernel compilation
+2. **Runtime Metadata Parsing** - Load and use metadata for argument marshaling
+3. **End-to-End Testing** - Validate complete pipeline
+
+---
+
+## Developer A: Kernel Metadata & Testing
+
+**Estimated Time:** 1-2 weeks
+**Estimated LOC:** ~150-200 lines + tests
+**Scope:** 🔵 **KERNEL-SIDE** (metadata emission in MLIR pass)
 
 ### Responsibilities
 

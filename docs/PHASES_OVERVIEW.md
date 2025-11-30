@@ -112,138 +112,191 @@ Phase 1 tests the *runtime*, not the compiler. Using Vortex kernels isolates run
 
 ## Phase 2: HIP Compiler Integration
 
-**Status:** 🔨 IN PROGRESS (Polygeist integration complete)
+**Status:** 🔨 IN PROGRESS (Split compilation model implemented)
 **Purpose:** Compile HIP `__global__` kernels to Vortex RISC-V format
 
-### Architecture: Polygeist + MLIR Pipeline
+### Architecture: Split Compilation Model
 
-**Selected Approach:** Use Polygeist (official LLVM tool) for HIP → MLIR SCF conversion
+**Selected Approach:** Separate host and kernel compilation paths
 
-**Why Polygeist?**
-- Official LLVM project (actively maintained)
-- Built-in CUDA/HIP support via `--cuda-lower` flag
-- Generates structured MLIR (SCF dialect)
-- Standard MLIR passes handle SCF → GPU conversion
-- Reduces custom code from ~1000 lines to ~500 lines
+The key insight is that HIP programs naturally split into two distinct executables:
+1. **Host code** - Runs on x86/ARM host CPU
+2. **Kernel code** - Runs on Vortex RISC-V GPU
+
+Rather than trying to compile both through a complex unified pipeline, we use:
+- **Host:** Standard C++ compiler (g++) + HIP runtime library
+- **Kernel:** Polygeist + MLIR pipeline → Vortex binary
+
+**Why Split Compilation?**
+- Simpler toolchain - standard g++ for host, no custom frontend needed
+- Better separation of concerns - host and device are independent
+- Easier debugging - can test each path independently
+- Industry standard - CUDA/HIP/OpenCL all use split compilation
+- Proven working - test passes with native Vortex kernel + HIP host
 
 ### Complete Compilation Pipeline
 
 ```
-HIP Source (.hip)
-    ↓
-[Polygeist: cgeist --cuda-lower]
-  - Handles __global__, threadIdx, blockIdx, <<<>>>
-  - Converts to MLIR SCF (Structured Control Flow)
-    ↓
-MLIR SCF Dialect
-    ↓
-[Standard MLIR: --convert-affine-for-to-gpu]
-  - SCF → GPU dialect (no custom work needed!)
-    ↓
-MLIR GPU Dialect
-  - gpu.launch_func, gpu.thread_id, gpu.barrier, etc.
-    ↓
-[Custom Pass: GPUToVortexLLVM] (~500 lines)
-  - Developer A: Thread Model & Kernel Launch
-  - Developer B: Memory Operations & Argument Marshaling
-  - Generates calls to libvortex.so
-    ↓
-MLIR LLVM Dialect (with vx_* runtime calls)
-    ↓
-[mlir-translate --mlir-to-llvmir]
-    ↓
-LLVM IR (.ll)
-    ↓
-[llvm-vortex backend]
-    ↓
-Vortex RISC-V Binary (.vxbin)
+┌─────────────────────────────────────────────────────────────────────┐
+│                    HIP Source (.hip)                                │
+│  ┌─────────────────────────┐     ┌─────────────────────────────┐   │
+│  │  __global__ kernel()    │     │  int main() {               │   │
+│  │  {                      │     │    hipMalloc(&d_ptr, size); │   │
+│  │    // kernel code       │     │    hipLaunchKernelGGL(...); │   │
+│  │  }                      │     │    hipDeviceSynchronize();  │   │
+│  └─────────────────────────┘     └─────────────────────────────┘   │
+└──────────────┬───────────────────────────────┬──────────────────────┘
+               │                               │
+               ▼                               ▼
+┌──────────────────────────────┐   ┌──────────────────────────────────┐
+│    KERNEL COMPILATION        │   │      HOST COMPILATION            │
+│    (Polygeist Pipeline)      │   │      (Standard C++)              │
+├──────────────────────────────┤   ├──────────────────────────────────┤
+│ 1. hip_splitter.py           │   │ 1. Standard g++ compiler         │
+│    - Extract kernel code     │   │    - Compiles host code          │
+│                              │   │    - Links libhip_vortex_runtime │
+│ 2. cgeist --cuda-lower       │   │    - Links libvortex.so          │
+│    - HIP → MLIR GPU dialect  │   │                                  │
+│                              │   │ 2. HIP API calls map to Vortex:  │
+│ 3. polygeist-opt             │   │    hipMalloc → vx_mem_alloc      │
+│    - GPUToVortex pass        │   │    hipMemcpy → vx_copy_to_dev    │
+│    - Thread ID lowering      │   │    hipLaunchKernelGGL → vx_start │
+│    - printf → vx_printf      │   │    hipDeviceSynchronize →        │
+│                              │   │                   vx_ready_wait  │
+│ 4. mlir-translate            │   │                                  │
+│    - MLIR → LLVM IR          │   │                                  │
+│                              │   │                                  │
+│ 5. llvm-vortex backend       │   │                                  │
+│    - LLVM IR → RISC-V        │   │                                  │
+└──────────────┬───────────────┘   └────────────────┬─────────────────┘
+               │                                    │
+               ▼                                    ▼
+       kernel.vxbin                          host_executable
+       kernel.meta.json                      (links libhip_vortex_runtime)
+               │                                    │
+               └────────────────┬───────────────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │   RUNTIME EXECUTION   │
+                    │   Host loads kernel   │
+                    │   binary at runtime   │
+                    └───────────────────────┘
 ```
 
-### HIP API Implementation
+### HIP Runtime Library (libhip_vortex_runtime)
 
-HIP API calls are handled via **header files** (standard HIP approach):
+The host links against a minimal HIP runtime that maps HIP API to Vortex API:
 
-```cpp
-// runtime/include/hip/hip_runtime.h (our Vortex backend)
-static inline hipError_t hipMalloc(void** ptr, size_t size) {
-    return vx_mem_alloc(vx_get_device(), size, ptr);
+**Location:** `runtime/hip_vortex_runtime/`
+
+**Implemented APIs:**
+```
+HIP API                  →  Vortex API
+─────────────────────────  ──────────────────────
+hipSetDevice()           →  vx_dev_open()
+hipGetDeviceProperties() →  vx_dev_caps()
+hipMalloc()              →  vx_mem_alloc()
+hipFree()                →  vx_mem_free()
+hipMemcpy()              →  vx_copy_to/from_dev()
+hipMemset()              →  vx_mem_alloc() + vx_copy_to_dev()
+hipDeviceSynchronize()   →  vx_ready_wait()
+hipGetErrorString()      →  (internal error table)
+hipGetLastError()        →  (internal error state)
+hipRegisterKernel()      →  vx_upload_kernel_file()
+hipLaunchKernelGGL()     →  vx_start()
+```
+
+**Build:**
+```bash
+cd runtime/hip_vortex_runtime
+make
+# Produces: lib/libhip_vortex_runtime.a
+```
+
+### Kernel Metadata (✅ IMPLEMENTED)
+
+During kernel compilation, the `ConvertGPUToVortex` MLIR pass emits metadata files describing kernel argument layouts for runtime argument marshaling.
+
+**Generated Files:**
+1. **`<kernel_name>.meta.json`** - JSON metadata for runtime dynamic loading
+2. **`<kernel_name>_args.h`** - C header for compile-time type-safe usage
+
+**JSON Format:** (RV32 - 4-byte pointers)
+
+```json
+{
+  "kernel_name": "_Z13launch_vecaddPKfS0_Pfji",
+  "arguments": [
+    {"name": "arg0", "type": "i32", "size": 4, "offset": 0, "is_pointer": false},
+    {"name": "arg1", "type": "i32", "size": 4, "offset": 4, "is_pointer": false},
+    {"name": "arg2", "type": "i32", "size": 4, "offset": 8, "is_pointer": false},
+    {"name": "arg3", "type": "ptr", "size": 4, "offset": 12, "is_pointer": true},
+    {"name": "arg4", "type": "ptr", "size": 4, "offset": 16, "is_pointer": true},
+    {"name": "arg5", "type": "ptr", "size": 4, "offset": 20, "is_pointer": true}
+  ],
+  "total_args_size": 24,
+  "architecture": "rv32"
 }
 ```
 
-**Flow:**
-1. User includes `<hip/hip_runtime.h>` (our version)
-2. C preprocessor inlines HIP API → Vortex API calls
-3. Polygeist sees `vx_*` calls as regular C functions
-4. No special HIP API handling needed in compiler
-
-### Key Transformations in GPUToVortexLLVM Pass
-
-**Device-Side (Kernel Code):**
-```mlir
-gpu.thread_id x  →  call @vx_thread_id()
-gpu.block_id x   →  compute from vx_warp_id()
-gpu.barrier      →  call @vx_barrier(bar_id, num_threads)
+**Generated C Header:**
+```c
+typedef struct {
+  int32_t arg0;   // offset=0, size=4
+  int32_t arg1;   // offset=4, size=4
+  int32_t arg2;   // offset=8, size=4
+  uint32_t arg3;  // offset=12, size=4, device pointer
+  uint32_t arg4;  // offset=16, size=4, device pointer
+  uint32_t arg5;  // offset=20, size=4, device pointer
+} kernel_args_t;
 ```
 
-**Host-Side (Kernel Launch):**
-```mlir
-gpu.launch_func @kernel blocks(...) threads(...)
-    ↓
-call @vx_upload_kernel_bytes(device, binary, size)
-call @vx_start(device)
-call @vx_ready_wait(device, timeout)
-```
+**Runtime Usage:**
+- `hipRegisterKernel()` loads `.meta.json` alongside `.vxbin`
+- `is_pointer: true` flags arguments that need device address translation
+- Metadata stored in kernel registry for use during `hipLaunchKernelGGL`
 
 ### Current Progress
 
-✅ **Polygeist Built and Validated**
-- Successfully built Polygeist from source
-- 202MB binary confirms complete build
-- `--cuda-lower` flag available and tested
+✅ **Split Compilation Model Validated**
+- Host compiles with standard g++
+- Links against libhip_vortex_runtime + libvortex.so
+- Successfully executes native Vortex kernels
+- test_native_kernel passes with vecadd kernel
 
-✅ **Documentation Complete**
-- Work distribution plan for 2 developers
-- Runtime library architecture clarified
-- Implementation guides ready
+✅ **HIP Runtime Library Complete**
+- All memory management APIs implemented
+- Device management APIs implemented
+- Error handling APIs implemented
+- Kernel launch infrastructure implemented
 
-✅ **Submodules Integrated**
-- Polygeist (Phase 2 compiler frontend)
-- llvm-vortex (RISC-V backend)
-- vortex (GPU hardware/simulator)
+✅ **Polygeist Kernel Pipeline Working**
+- 21/22 kernel-only files convert through Polygeist
+- ConvertGPUToVortex pass handles thread IDs, barriers
+- printf lowering to vx_printf implemented
 
-### Development Plan (5 weeks, 2 developers)
+✅ **Kernel Extraction Tool**
+- hip_splitter.py extracts kernels from full HIP sources
+- Preserves preprocessor definitions
+- Generates kernel-only files for Polygeist
 
-**Week 1: Setup & Infrastructure**
-- Test HIP syntax with Polygeist `--cuda-lower`
-- Verify standard MLIR passes work
-- Set up GPUToVortexLLVM pass framework
-
-**Weeks 2-3: Parallel Implementation**
-- Developer A: Thread Model & Kernel Launch (~250 lines)
-- Developer B: Memory Operations & Argument Marshaling (~250 lines)
-
-**Week 4: Integration**
-- Combine modules
-- Metadata extraction from MLIR
-- End-to-end testing
-
-**Week 5: Validation**
-- Convert all Phase 1 tests to HIP kernels
-- Compare results with Phase 1 baselines
-- Bug fixes and optimization
+✅ **Kernel Metadata Emission**
+- ConvertGPUToVortex pass emits `.meta.json` and `_args.h`
+- Runtime parses JSON metadata during kernel registration
 
 ### Success Criteria
 
-✅ Polygeist successfully compiles HIP kernels to MLIR
-✅ Standard MLIR passes convert SCF → GPU
-✅ GPUToVortexLLVM pass generates Vortex runtime calls
-✅ All Phase 1 tests pass with compiled HIP kernels
-✅ Performance meets or exceeds Phase 1 baselines
+✅ Host code compiles with standard g++ (no special compiler)
+✅ HIP runtime library maps all required APIs to Vortex
+✅ Kernel compiles through Polygeist to .vxbin
+✅ Runtime loads kernel binary and executes correctly
+✅ All Phase 1 tests pass with split compilation model
+✅ Kernel metadata enables dynamic argument marshaling
 
 ### Documentation
-- **[docs/WORK_DISTRIBUTION.md](WORK_DISTRIBUTION.md)** - 2-developer plan
-- **[docs/phase2-polygeist/](phase2-polygeist/)** - Polygeist integration details
-- **[docs/implementation/HIP-TO-VORTEX-API-MAPPING.md](implementation/HIP-TO-VORTEX-API-MAPPING.md)** - API mappings
+- **[runtime/hip_vortex_runtime/README.md](../runtime/hip_vortex_runtime/README.md)** - HIP runtime library
+- **[scripts/hip_splitter.py](../scripts/hip_splitter.py)** - Kernel extraction tool
 
 ---
 
@@ -348,11 +401,14 @@ vortex_hip/
 - End-to-end execution verified
 
 ### 🔨 In Progress (Phase 2)
-- ✅ Polygeist built and integrated (202MB binary)
-- ✅ Submodules configured (Polygeist, llvm-vortex, vortex)
-- ✅ Work distribution plan complete (2 developers, 5 weeks)
-- ✅ Architecture finalized (Polygeist + MLIR pipeline)
-- 📋 Next: Implement GPUToVortexLLVM pass (~500 lines)
+- ✅ Split compilation model validated and working
+- ✅ HIP runtime library (libhip_vortex_runtime) complete
+- ✅ Polygeist kernel pipeline working (21/22 kernels)
+- ✅ ConvertGPUToVortex MLIR pass implemented
+- ✅ test_native_kernel passes with Vortex vecadd kernel
+- ✅ Kernel metadata emission (JSON + C headers)
+- ✅ Runtime metadata parsing during kernel registration
+- 📋 Next: End-to-end test with Polygeist-compiled HIP kernel
 
 ### ⏳ Future (Phase 3)
 - Full toolchain integration
@@ -368,7 +424,7 @@ vortex_hip/
 - ✅ **Complete** - Runtime proven with 13 tests passing
 
 **Phase 2:** Automate kernel compilation (HIP → Vortex)
-- 🔨 **In Progress** - Polygeist infrastructure ready, implementing custom pass
+- 🔨 **In Progress** - Split compilation + metadata emission complete, end-to-end testing next
 
 **Phase 3:** Optimize and productionize
 - ⏳ **Future** - Optimizations and extended features
@@ -378,12 +434,18 @@ This approach allows:
 2. 🔨 Compiler work builds on verified runtime
 3. ⏳ Optimization happens with complete system
 
-**Current Achievement:** Phase 1 complete, Phase 2 infrastructure ready!
+**Current Achievement:** Phase 2 kernel metadata emission complete!
 
-**Critical Path:** Implement GPUToVortexLLVM pass (Developer A: Thread Model, Developer B: Memory Operations)
+**Key Simplification:** Instead of complex unified compilation, we use:
+- Standard g++ for host code (links libhip_vortex_runtime)
+- Polygeist pipeline for kernel code only
+- Runtime dynamically loads kernel binaries
+- Metadata files enable runtime argument marshaling
+
+**Next Step:** End-to-end test with full HIP program compiled via Polygeist
 
 ---
 
-**Last Updated:** 2025-11-14
+**Last Updated:** 2025-11-28
 **Target Architecture:** RV32 (32-bit RISC-V)
-**Next Milestone:** Test HIP syntax with Polygeist --cuda-lower flag
+**Next Milestone:** Complete HIP→Vortex compilation with runtime execution
