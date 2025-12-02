@@ -2,405 +2,308 @@
 
 **Goal:** Enable HIP (Heterogeneous-compute Interface for Portability) applications to run on Vortex RISC-V GPU hardware through an automated compilation pipeline.
 
-**Status:** Phase 1 (Metadata Generation) complete, Phase 2 (Compiler Integration) in progress using Polygeist
+**Status:** Phase 1 (Runtime) complete, Phase 2 (Kernel Compilation) in progress
 
 ---
 
 ## Quick Start
 
-**Current Phase:** Building and validating Polygeist for C++/HIP → SCF conversion
+### Prerequisites
 
-See: **[docs/phase2-polygeist/STATUS.md](docs/phase2-polygeist/STATUS.md)** for complete current status
+- Linux (tested on Ubuntu 22.04)
+- GCC 11+ or Clang 14+
+- CMake 3.20+
+- Ninja (recommended) or Make
+- Python 3.8+
+
+### Clone and Initialize
+
+```bash
+git clone --recursive https://github.com/YOUR_USERNAME/vortex_hip.git
+cd vortex_hip
+
+# If already cloned without --recursive:
+git submodule update --init --recursive
+```
+
+### Build Polygeist (HIP to MLIR Compiler)
+
+```bash
+cd Polygeist
+
+# Configure (uses Ninja by default)
+cmake -G Ninja -B build \
+    -DLLVM_ENABLE_PROJECTS="clang;mlir" \
+    -DLLVM_TARGETS_TO_BUILD="host;NVPTX" \
+    -DCMAKE_BUILD_TYPE=Release
+
+# Build (takes 30-60 minutes)
+cmake --build build --target cgeist polygeist-opt
+
+# Verify
+./build/bin/cgeist --version
+```
+
+### Build Vortex Runtime (Optional - for full execution)
+
+```bash
+cd vortex
+mkdir build && cd build
+../configure --tooldir=/opt/riscv-gnu-toolchain
+make
+```
 
 ---
 
-## Project Overview
+## Compiling HIP Kernels for Vortex
 
-### What is This Project?
+### Step 1: Prepare HIP Source
 
-This project implements a **compiler pipeline** that takes standard HIP/CUDA code and compiles it to run on Vortex RISC-V GPU hardware. The pipeline uses:
+Write your HIP kernel using standard HIP syntax:
 
-1. **Polygeist** - Official LLVM tool for C++ → MLIR SCF conversion
-2. **MLIR passes** - Standard MLIR transformations (SCF → GPU dialect)
-3. **Custom pass** - GPU → Vortex mapping (to be implemented)
-4. **llvm-vortex** - RISC-V code generation
+```cpp
+// vecadd.hip
+#include <hip/hip_runtime.h>
 
-### Architecture
-
-```
-HIP/CUDA Source Code (.cpp, .cu)
-    ↓
-[Polygeist] C++ → MLIR SCF Dialect
-    ↓
-[MLIR Passes] SCF → GPU Dialect
-    ↓
-[Custom Pass] GPU → LLVM with Vortex calls
-    ↓
-[mlir-translate] MLIR → LLVM IR
-    ↓
-[llvm-vortex] LLVM IR → Vortex RISC-V Assembly
-    ↓
-Vortex Binary
+__global__ void vecadd_kernel(float* a, float* b, float* c, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        c[idx] = a[idx] + b[idx];
+    }
+}
 ```
 
-**Key Insight:** No LLVM version conflicts - Polygeist (LLVM 18) and llvm-vortex (LLVM 10) never interact directly. Handoff is via standard LLVM IR.
+### Step 2: Transform Source for Split Compilation
+
+Use the `inject_kernel_launchers.py` script to prepare the source:
+
+```bash
+python3 scripts/polygeist/inject_kernel_launchers.py vecadd.hip vecadd_transformed.cu
+```
+
+This script:
+- Adds conditional includes (`#ifndef __CUDA__` for host, `#else` for device)
+- Wraps kernel definitions for dual compilation
+- Injects synthetic launch wrappers required by Polygeist
+
+### Step 3: Compile Kernel to GPU Dialect MLIR
+
+```bash
+./Polygeist/build/bin/cgeist vecadd_transformed.cu \
+    --cuda-lower \
+    --cuda-gpu-arch=sm_60 \
+    -nocudalib \
+    -nocudainc \
+    -resource-dir=./Polygeist/llvm-project/build/lib/clang/18 \
+    -I. \
+    --function='*' \
+    --emit-cuda \
+    -S \
+    -o vecadd.mlir
+```
+
+### Step 4: Compile Host Code
+
+```bash
+g++ -c vecadd_transformed.cu -o vecadd_host.o \
+    -I runtime/hip_vortex_runtime/include \
+    -std=c++17
+```
+
+---
+
+## Split Compilation Model
+
+The pipeline uses split compilation - host and device code are compiled separately:
+
+```
+                    HIP Source (.hip)
+                          │
+            ┌─────────────┴─────────────┐
+            ▼                           ▼
+    ┌───────────────┐           ┌───────────────┐
+    │ HOST PATH     │           │ DEVICE PATH   │
+    │ (g++)         │           │ (Polygeist)   │
+    ├───────────────┤           ├───────────────┤
+    │ hip/hip_      │           │ hip_runtime_  │
+    │ runtime.h     │           │ vortex/       │
+    │ (Vortex API)  │           │ hip_runtime.h │
+    ├───────────────┤           ├───────────────┤
+    │ extern kernel │           │ full kernel   │
+    │ declarations  │           │ definitions   │
+    └───────┬───────┘           └───────┬───────┘
+            │                           │
+            ▼                           ▼
+    host_executable             kernel.mlir (GPU dialect)
+            │                           │
+            │                           ▼
+            │                   [GPUToVortex pass]
+            │                           │
+            │                           ▼
+            │                   kernel.vxbin
+            │                           │
+            └───────────┬───────────────┘
+                        │
+                        ▼
+                   Runtime loads
+                   kernel binary
+```
+
+---
+
+## Project Structure
+
+```
+vortex_hip/
+├── Polygeist/                    # HIP → MLIR compiler (submodule)
+│   └── build/bin/
+│       ├── cgeist               # C++/CUDA → MLIR frontend
+│       └── polygeist-opt        # MLIR optimizer
+│
+├── vortex/                       # Vortex GPU (submodule)
+│
+├── scripts/
+│   └── polygeist/
+│       └── inject_kernel_launchers.py  # Source transformation
+│
+├── runtime/
+│   └── hip_vortex_runtime/       # HIP API → Vortex runtime mapping
+│       ├── include/hip/
+│       │   └── hip_runtime.h     # HIP API declarations
+│       └── src/
+│           └── hip_runtime.cpp   # Runtime implementation
+│
+├── hip_runtime_vortex/
+│   └── hip_runtime.h            # Device-side header for Polygeist
+│
+├── hip_tests/
+│   ├── kernels/                 # HIP kernel sources
+│   └── gpu_mlir_output/         # Generated MLIR files
+│
+└── docs/
+    ├── PHASES_OVERVIEW.md       # Project phases
+    ├── GPU_TO_VORTEX_LOWERING.md # Lowering reference
+    └── WORK_DISTRIBUTION.md     # Implementation tasks
+```
 
 ---
 
 ## Current Status
 
-### ✅ Phase 1: Metadata Generation (Complete)
+### ✅ Phase 1: HIP Runtime (Complete)
 
-**Achievement:** Automatic extraction of kernel argument metadata from compiled binaries
+- HIP runtime library mapping to Vortex API
+- 13 runtime tests passing on Vortex SimX simulator
+- Memory management, device management, kernel launch
 
-- Python-based metadata generator using DWARF debug information
-- Tested with reference HIP kernels
-- Generates correct argument offsets, sizes, and pointer flags
-- See: `phase1-metadata/` and `docs/PHASE1_COMPLETE.md`
-
-### 🔄 Phase 2: Compiler Integration (In Progress - Using Polygeist)
-
-**Current Work:** Building and validating Polygeist for HIP → SCF conversion
+### 🔄 Phase 2: Kernel Compilation (In Progress)
 
 **Completed:**
-- ✅ Polygeist built successfully (202MB binary, LLVM 18, optimized)
-- ✅ C++ → SCF validation complete (5/5 tests passed)
-- ✅ MLIR GPU infrastructure verified available
-- ✅ HIP support investigated (47 source references found, 80% likely works as-is)
-- ✅ Architecture validated (no version conflicts)
+- ✅ Polygeist compiles HIP kernels to GPU dialect MLIR
+- ✅ 21/22 test kernels compile successfully
+- ✅ Source transformation script (`inject_kernel_launchers.py`)
+- ✅ Split compilation model validated
 
-**Current Documentation:**
-- **[docs/phase2-polygeist/STATUS.md](docs/phase2-polygeist/STATUS.md)** - Complete current status
-- **[docs/phase2-polygeist/hip_minimal.h](docs/phase2-polygeist/hip_minimal.h)** - Minimal HIP header for testing
-- **[docs/phase2-polygeist/investigation/HIP_SUPPORT_INVESTIGATION.md](docs/phase2-polygeist/investigation/HIP_SUPPORT_INVESTIGATION.md)** - HIP support analysis
+**GPU Dialect Operations Generated:**
+- `gpu.module`, `gpu.func` - kernel definitions
+- `gpu.block_id`, `gpu.thread_id` - thread indexing
+- `gpu.barrier` - thread synchronization (when shared memory used)
+- `gpu.launch_func` - kernel launches
 
-**Next Steps:**
-- **Phase 2A** (2 hours) - Quick test: HIP kernel with `--cuda-lower` flag
-- **Phase 2B** (2-3 weeks) - Implement GPUToVortexLLVM pass (~500 lines)
-- **Phase 2C** (1 week) - Integrate metadata extraction with compiler
+**Remaining:**
+- GPUToVortex MLIR pass (lower GPU dialect to Vortex)
+- LLVM IR generation
+- Vortex binary generation
 
-### ⏳ Phase 3: Runtime Library (Planned)
+### ⏳ Phase 3: Full Integration (Planned)
 
-**Goal:** HIP runtime library mapping HIP API calls to Vortex runtime
-
-- Device management (hipGetDeviceCount, hipSetDevice, etc.)
-- Memory management (hipMalloc, hipMemcpy, hipFree)
-- Kernel execution (hipLaunchKernel, hipDeviceSynchronize)
-- See planning in: `phase3-runtime/`
+- End-to-end compilation pipeline
+- Performance optimizations
+- Extended HIP API coverage
 
 ---
 
-## Repository Structure
+## Test Kernels
 
-```
-vortex_hip/
-├── README.md                          # This file
-├── INDEX.md                           # Navigation guide
-├── CONTRIBUTING.md                    # Git and documentation guidelines
-│
-├── docs/phase2-polygeist/             # Polygeist documentation
-│   ├── STATUS.md                      # ⭐ Current status
-│   ├── BUILD_OPTIONS.md               # Build configuration analysis
-│   ├── hip_minimal.h                  # Minimal HIP header
-│   ├── HIP_SUPPORT_INVESTIGATION.md   # HIP support findings
-│   └── investigation/                 # Investigation results
-│
-├── phase1-metadata/                   # Phase 1: Metadata extraction ✅
-│   ├── hip_metadata_gen.py            # Python metadata generator
-│   ├── test_kernels/                  # Reference test kernels
-│   └── results/                       # Validation results
-│
-├── phase2-compiler/                   # Phase 2: Compiler integration 🔄
-│   └── [To be created: GPUToVortexLLVM pass]
-│
-├── phase3-runtime/                    # Phase 3: Runtime library ⏳
-│   └── [Planned implementation]
-│
-├── docs/
-│   ├── PHASES_OVERVIEW.md             # Phase breakdown
-│   ├── PHASE1_COMPLETE.md             # Phase 1 summary
-│   ├── implementation/                # Implementation guides
-│   │   ├── HIP-TO-VORTEX-API-MAPPING.md
-│   │   ├── COMPILER_INFRASTRUCTURE.md
-│   │   ├── COMPILER_METADATA_GENERATION.md
-│   │   └── ...
-│   └── reference/                     # Architecture documentation
-│       └── VORTEX-ARCHITECTURE.md
-│
-├── vortex/                            # Vortex GPU (git submodule)
-└── llvm-vortex/                       # LLVM with Vortex backend (git submodule)
+The `hip_tests/kernels/` directory contains test kernels:
+
+| Kernel | Features |
+|--------|----------|
+| vecadd | Basic thread indexing |
+| sgemm | Matrix multiplication |
+| sgemm2 | Shared memory, barriers |
+| printf | Device-side printf |
+| diverge | Control flow divergence |
+| conv3 | 3D convolution |
+
+Compile all kernels to MLIR:
+
+```bash
+for kernel in hip_tests/kernels/*.hip; do
+    name=$(basename "$kernel" .hip)
+    python3 scripts/polygeist/inject_kernel_launchers.py "$kernel" "/tmp/${name}.cu"
+    ./Polygeist/build/bin/cgeist "/tmp/${name}.cu" \
+        --cuda-lower --cuda-gpu-arch=sm_60 \
+        -nocudalib -nocudainc \
+        -resource-dir=./Polygeist/llvm-project/build/lib/clang/18 \
+        -I. --function='*' --emit-cuda -S \
+        -o "hip_tests/gpu_mlir_output/${name}.mlir"
+done
 ```
 
 ---
 
-## Key Technical Decisions
+## Key Technical Details
 
-### Why Polygeist?
+### Why Split Compilation?
 
-**Problem:** Need to convert C++/HIP code to MLIR SCF dialect
-
-**Options Evaluated:**
-1. Custom LLVM→MLIR pass (complex, error-prone)
-2. Clang plugin (requires extensive Clang knowledge)
-3. **Polygeist** ⭐ (official LLVM tool, production quality)
-
-**Decision:** Use Polygeist
-
-**Rationale:**
-- Official LLVM project (maintained, production-quality)
-- Direct C++ → SCF conversion (skips LLVM IR complexity)
-- Proven performance (2.5x speedup over alternatives)
-- Standard MLIR infrastructure compatibility
-- Minimal custom code needed (only GPU → Vortex pass)
+- **Simpler toolchain** - standard g++ for host, no custom frontend
+- **Better separation** - host and device are independent
+- **Easier debugging** - test each path independently
+- **Industry standard** - CUDA/HIP/OpenCL all use this model
 
 ### No LLVM Version Conflicts
 
-**Key Architectural Insight:**
-
 ```
-Polygeist Ecosystem (LLVM 18)          Vortex Ecosystem (LLVM 10)
-        ↓                                       ↓
-  C++ → SCF → GPU → LLVM Dialect          LLVM IR → RISC-V
-        ↓                                       ↑
-        └───────── LLVM IR (.ll) ──────────────┘
-                   (version-independent)
+Polygeist (LLVM 18)              llvm-vortex (LLVM 10)
+        ↓                                ↓
+  HIP → GPU MLIR                   LLVM IR → RISC-V
+        ↓                                ↑
+        └────── LLVM IR (.ll) ───────────┘
+                (version-independent)
 ```
 
-- Polygeist brings its own LLVM 18 (self-contained)
-- llvm-vortex uses LLVM 10 (independent)
-- Handoff is standard LLVM IR (version-independent)
-- **No conflicts, no compatibility issues**
+### Macro-Based Header Selection
 
-### No Custom Vortex MLIR Dialect Needed
+The `inject_kernel_launchers.py` script uses `__CUDA__` macro (defined by Polygeist's clang) to select headers:
 
-**Discovery:** Vortex uses inline assembly for runtime operations, not LLVM intrinsics
-
-**Implication:** Can emit standard LLVM function calls instead of custom dialect operations
-
-```mlir
-gpu.thread_id x  →  call @vx_thread_id()  (standard LLVM)
-gpu.block_id x   →  compute from vx_warp_id()
-gpu.barrier      →  call @vx_barrier()
+```cpp
+#ifndef __CUDA__
+#include "hip/hip_runtime.h"           // Host: Vortex runtime API
+#else
+#include "hip_runtime_vortex/hip_runtime.h"  // Device: CUDA builtins
+#endif
 ```
-
-**Benefit:** Saves ~2000 lines of custom dialect code
 
 ---
 
-## Implementation Phases
+## Documentation
 
-### Phase 1: Metadata Generation ✅ COMPLETE
-
-**Duration:** 2 weeks
-**Status:** Complete and tested
-
-**Deliverables:**
-- Python-based DWARF parser
-- Automatic argument offset calculation
-- Metadata generation for kernel registration
-- Validation with reference kernels
-
-**Key Files:**
-- `phase1-metadata/hip_metadata_gen.py`
-- `docs/PHASE1_COMPLETE.md`
-
-### Phase 2: Compiler Integration 🔄 IN PROGRESS
-
-**Duration:** 4-5 weeks (estimated)
-**Status:** Building Polygeist infrastructure
-
-#### Phase 2A: HIP Syntax Testing (2 hours)
-- Test HIP kernel with `--cuda-lower` flag
-- Verify HIP built-ins work with Polygeist
-- Document findings
-
-#### Phase 2B: GPUToVortexLLVM Pass (2-3 weeks)
-- Implement custom MLIR pass (~500 lines)
-- Map GPU dialect operations to Vortex runtime calls
-- `gpu.thread_id` → `call @vx_thread_id()`
-- `gpu.block_id` → compute from warp/thread IDs
-- `gpu.barrier` → `call @vx_barrier()`
-
-#### Phase 2C: Metadata Integration (1 week)
-- Extract metadata from MLIR function signatures
-- Integrate with Phase 1 metadata generator
-- Generate kernel registration code
-
-**Key Files:**
-- `docs/phase2-polygeist/STATUS.md` - Current status
-- `phase2-compiler/` - Implementation directory (to be created)
-
-### Phase 3: Runtime Library ⏳ PLANNED
-
-**Duration:** 3-4 weeks (estimated)
-**Status:** Planned, not started
-
-**Scope:**
-- Host-side HIP API implementation
-- Memory management (malloc, memcpy, free)
-- Device management (get device count, set device)
-- Kernel execution (launch, synchronize)
-- Error handling
-
-**Key Files:**
-- `phase3-runtime/` - Implementation directory
-
----
-
-## Quick Links
-
-### Getting Started
-1. **[docs/phase2-polygeist/STATUS.md](docs/phase2-polygeist/STATUS.md)** - Current work and status
-2. **[INDEX.md](INDEX.md)** - Full navigation guide
-3. **[docs/PHASES_OVERVIEW.md](docs/PHASES_OVERVIEW.md)** - Detailed phase breakdown
-
-### Implementation Guides
-- **[docs/implementation/HIP-TO-VORTEX-API-MAPPING.md](docs/implementation/HIP-TO-VORTEX-API-MAPPING.md)** - API mapping reference
-- **[docs/implementation/COMPILER_INFRASTRUCTURE.md](docs/implementation/COMPILER_INFRASTRUCTURE.md)** - Compiler architecture
-- **[docs/reference/VORTEX-ARCHITECTURE.md](docs/reference/VORTEX-ARCHITECTURE.md)** - Vortex GPU capabilities
-
-### Phase Documentation
-- **[docs/PHASE1_COMPLETE.md](docs/PHASE1_COMPLETE.md)** - Phase 1 completion report
-- **[phase1-metadata/](phase1-metadata/)** - Phase 1 implementation
-- **[docs/phase2-polygeist/](docs/phase2-polygeist/)** - Phase 2 current work
+- **[docs/PHASES_OVERVIEW.md](docs/PHASES_OVERVIEW.md)** - Complete phase breakdown
+- **[docs/GPU_TO_VORTEX_LOWERING.md](docs/GPU_TO_VORTEX_LOWERING.md)** - GPU dialect lowering reference
+- **[docs/WORK_DISTRIBUTION.md](docs/WORK_DISTRIBUTION.md)** - Implementation tasks
 
 ---
 
 ## External Dependencies
 
-### Git Submodules
-
-1. **Vortex** - RISC-V GPU hardware
-   - Repository: https://github.com/vortexgpgpu/vortex
-   - Branch: master
-   - Purpose: Target hardware platform
-
-2. **llvm-vortex** - LLVM with Vortex backend
-   - Repository: https://github.com/vortexgpgpu/llvm
-   - Version: LLVM 10 (custom fork)
-   - Purpose: Final RISC-V code generation
-
-3. **Polygeist** - C++ to MLIR translator
-   - Repository: https://github.com/ymweiss/Polygeist (fork)
-   - Upstream: https://github.com/llvm/Polygeist (official)
-   - Version: LLVM 18
-   - Purpose: C++/HIP → SCF conversion
-
-**Setup:**
-```bash
-git clone --recursive https://github.com/YOUR_USERNAME/vortex_hip.git
-# Or if already cloned:
-git submodule update --init --recursive
-```
+| Submodule | Purpose | Version |
+|-----------|---------|---------|
+| Polygeist | HIP → MLIR compiler | LLVM 18 |
+| vortex | Target GPU hardware | master |
+| llvm-vortex | RISC-V code generation | LLVM 10 |
 
 ---
 
-## Development Workflow
-
-### Current Phase 2 Workflow
-
-1. **Polygeist is built** at `/home/yaakov/vortex_hip/docs/phase2-polygeist/build/bin/cgeist`
-2. **Test HIP kernels** using `hip_minimal.h` header
-3. **Implement GPUToVortexLLVM pass** in `phase2-compiler/`
-4. **Integrate with metadata generation** from Phase 1
-
-### Testing
-
-**Phase 1 Tests:**
-```bash
-cd phase1-metadata
-python hip_metadata_gen.py test_kernels/vecadd.hip
-```
-
-**Phase 2 Tests (current):**
-```bash
-cd Polygeist
-./build/bin/cgeist simple.cpp -S -o simple.mlir
-# Verify SCF dialect output
-```
-
----
-
-## Contributing
-
-See **[CONTRIBUTING.md](CONTRIBUTING.md)** for:
-- Commit message conventions
-- Documentation standards
-- Code style guidelines
-
----
-
-## Timeline Summary
-
-| Phase | Duration | Status | Key Deliverable |
-|-------|----------|--------|-----------------|
-| **Phase 1** | 2 weeks | ✅ Complete | Metadata generator |
-| **Phase 2A** | 2 hours | 🔄 In Progress | HIP syntax test |
-| **Phase 2B** | 2-3 weeks | ⏳ Pending | GPUToVortexLLVM pass |
-| **Phase 2C** | 1 week | ⏳ Pending | Metadata integration |
-| **Phase 3** | 3-4 weeks | ⏳ Planned | Runtime library |
-| **Total** | ~9-11 weeks | ~20% complete | Working HIP compiler |
-
----
-
-## Resources
-
-### Documentation
-- [HIP Programming Guide](https://rocm.docs.amd.com/projects/HIP/)
-- [MLIR Documentation](https://mlir.llvm.org/)
-- [Polygeist Paper](https://mlir.llvm.org/OpenMeetings/2021-01-14-Polygeist.pdf)
-
-### Related Projects
-- [Polygeist GitHub](https://github.com/llvm/Polygeist)
-- [Vortex GPU](https://github.com/vortexgpgpu/vortex)
-- [chipStar](https://github.com/CHIP-SPV/chipStar) - Alternative HIP implementation
-
----
-
-## Frequently Asked Questions
-
-### Why not use chipStar?
-
-chipStar uses SPIR-V as intermediate representation, which would require:
-1. SPIR-V support in Vortex (major effort)
-2. SPIR-V → RISC-V translation layer
-3. OpenCL runtime implementation
-
-The Polygeist approach is simpler and more direct.
-
-### Why not modify Clang directly?
-
-Polygeist already provides the C++ → MLIR conversion we need. Building a Clang plugin or modifying Clang would duplicate existing functionality.
-
-### How does this compare to official AMD HIP?
-
-This is a **compiler** for Vortex hardware. AMD's HIP is designed for AMD GPUs. We're creating a compatible compiler that targets Vortex RISC-V instead of AMD GCN/CDNA.
-
-### What HIP features are supported?
-
-**Current target (Phase 2):**
-- Basic kernel launches
-- Memory management (malloc, memcpy, free)
-- Thread indexing (threadIdx, blockIdx, blockDim, gridDim)
-- Barriers (__syncthreads)
-
-**Future (Phase 3+):**
-- Shared memory
-- Atomic operations
-- Streams and events
-- Multi-device support
-
----
-
-## Contact and Support
-
-For questions about this project, please:
-1. Check existing documentation in `docs/`
-2. Review phase-specific documentation
-3. See implementation guides in `docs/implementation/`
-
----
-
-**Last Updated:** November 10, 2025
-**Current Phase:** Phase 2 (Compiler Integration using Polygeist)
-**Status:** Polygeist built and validated, ready for GPUToVortexLLVM pass implementation
+**Last Updated:** 2025-11-30
+**Current Phase:** Phase 2 (Kernel Compilation)
