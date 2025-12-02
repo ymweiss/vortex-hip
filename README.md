@@ -44,13 +44,45 @@ cmake --build build --target cgeist polygeist-opt
 ./build/bin/cgeist --version
 ```
 
-### Build Vortex Runtime (Optional - for full execution)
+### Build Vortex Runtime Library
+
+The host executable links against `libvortex.so` to communicate with the Vortex simulator/hardware.
 
 ```bash
 cd vortex
-mkdir build && cd build
-../configure --tooldir=/opt/riscv-gnu-toolchain
-make
+
+# Install system dependencies (requires sudo)
+sudo ./ci/install_dependencies.sh
+
+# Configure build
+mkdir -p build && cd build
+../configure --xlen=32 --tooldir=$HOME/tools
+
+# Install prebuilt toolchain (RISC-V compiler, LLVM, etc.)
+./ci/toolchain_install.sh --all
+
+# Set environment variables (run this before each session)
+source ./ci/toolchain_env.sh
+
+# Build runtime libraries
+make -C runtime
+
+# Verify libraries were built
+ls -la runtime/libvortex*.so
+```
+
+**Output libraries:**
+- `libvortex.so` - Core runtime API
+- `libvortex-simx.so` - SimX simulator backend
+- `libvortex-rtlsim.so` - RTL simulator backend
+
+**Linking host code:**
+```bash
+g++ host_code.o -o app \
+    -L/path/to/vortex/build/runtime \
+    -L/path/to/vortex_hip/runtime/hip_vortex_runtime/lib \
+    -lvortex -lvortex-simx -lhip_vortex_runtime \
+    -Wl,-rpath,/path/to/vortex/build/runtime
 ```
 
 ---
