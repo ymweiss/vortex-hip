@@ -85,6 +85,35 @@ g++ host_code.o -o app \
     -Wl,-rpath,/path/to/vortex/build/runtime
 ```
 
+### Build llvm-vortex (Device Code Compiler)
+
+llvm-vortex is the LLVM backend that compiles LLVM IR to Vortex RISC-V binaries. This is needed to convert device code from MLIR/LLVM IR to executable kernel binaries.
+
+```bash
+cd llvm-vortex
+
+mkdir build && cd build
+cmake -G Ninja ../llvm \
+    -DLLVM_ENABLE_PROJECTS="clang" \
+    -DLLVM_TARGETS_TO_BUILD="RISCV" \
+    -DCMAKE_BUILD_TYPE=Release
+
+cmake --build . --target clang llc
+
+# Verify
+./bin/llc --version | grep riscv
+```
+
+**Usage (after GPUToVortex lowering produces LLVM IR):**
+```bash
+# Compile LLVM IR to Vortex RISC-V object
+./llvm-vortex/build/bin/llc -march=riscv32 -mcpu=generic-rv32 \
+    -mattr=+m,+f kernel.ll -o kernel.o
+
+# Link to create kernel binary
+riscv32-unknown-elf-ld kernel.o -o kernel.vxbin
+```
+
 ---
 
 ## Compiling HIP Kernels for Vortex
