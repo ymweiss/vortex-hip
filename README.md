@@ -28,17 +28,31 @@ git submodule update --init --recursive
 
 ### Build Polygeist (HIP to MLIR Compiler)
 
+Polygeist converts HIP/CUDA source to MLIR. It requires LLVM, MLIR, and Clang to be built first.
+
+See [Polygeist/README.md](Polygeist/README.md) for full build options. Quick build:
+
 ```bash
 cd Polygeist
 
-# Configure (uses Ninja by default)
-cmake -G Ninja -B build \
+# 1. Build LLVM/MLIR/Clang dependencies
+mkdir -p llvm-project/build && cd llvm-project/build
+cmake -G Ninja ../llvm \
     -DLLVM_ENABLE_PROJECTS="clang;mlir" \
     -DLLVM_TARGETS_TO_BUILD="host;NVPTX" \
     -DCMAKE_BUILD_TYPE=Release
+ninja    # Takes 30-60 minutes
+cd ../..
 
-# Build (takes 30-60 minutes)
-cmake --build build --target cgeist polygeist-opt
+# 2. Build Polygeist
+mkdir -p build && cd build
+cmake -G Ninja .. \
+    -DMLIR_DIR=$PWD/../llvm-project/build/lib/cmake/mlir \
+    -DCLANG_DIR=$PWD/../llvm-project/build/lib/cmake/clang \
+    -DLLVM_TARGETS_TO_BUILD="host;NVPTX" \
+    -DCMAKE_BUILD_TYPE=Release
+ninja cgeist polygeist-opt
+cd ..
 
 # Verify
 ./build/bin/cgeist --version
