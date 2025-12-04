@@ -28,29 +28,104 @@ git submodule update --init --recursive
 
 ### Build Polygeist (HIP to MLIR Compiler)
 
+Polygeist converts HIP/CUDA source to MLIR. It requires LLVM, MLIR, and Clang to be built first.
+
+See [Polygeist/README.md](Polygeist/README.md) for full build options. Quick build:
+
 ```bash
 cd Polygeist
 
-# Configure (uses Ninja by default)
-cmake -G Ninja -B build \
+# 1. Build LLVM/MLIR/Clang dependencies
+mkdir -p llvm-project/build && cd llvm-project/build
+cmake -G Ninja ../llvm \
     -DLLVM_ENABLE_PROJECTS="clang;mlir" \
     -DLLVM_TARGETS_TO_BUILD="host;NVPTX" \
     -DCMAKE_BUILD_TYPE=Release
+ninja    # Takes 30-60 minutes
+cd ../..
 
-# Build (takes 30-60 minutes)
-cmake --build build --target cgeist polygeist-opt
+# 2. Build Polygeist
+mkdir -p build && cd build
+cmake -G Ninja .. \
+    -DMLIR_DIR=$PWD/../llvm-project/build/lib/cmake/mlir \
+    -DCLANG_DIR=$PWD/../llvm-project/build/lib/cmake/clang \
+    -DLLVM_TARGETS_TO_BUILD="host;NVPTX" \
+    -DCMAKE_BUILD_TYPE=Release
+ninja cgeist polygeist-opt
+cd ..
 
 # Verify
 ./build/bin/cgeist --version
 ```
 
-### Build Vortex Runtime (Optional - for full execution)
+### Build Vortex Runtime Library
+
+The host executable links against `libvortex.so` to communicate with the Vortex simulator/hardware.
 
 ```bash
 cd vortex
+
+# Install system dependencies (requires sudo)
+sudo ./ci/install_dependencies.sh
+
+# Configure build
+mkdir -p build && cd build
+../configure --xlen=32 --tooldir=$HOME/tools
+
+# Install prebuilt toolchain (RISC-V compiler, LLVM, etc.)
+./ci/toolchain_install.sh --all
+
+# Set environment variables (run this before each session)
+source ./ci/toolchain_env.sh
+
+# Build runtime libraries
+make -C runtime
+
+# Verify libraries were built
+ls -la runtime/libvortex*.so
+```
+
+**Output libraries:**
+- `libvortex.so` - Core runtime API
+- `libvortex-simx.so` - SimX simulator backend
+- `libvortex-rtlsim.so` - RTL simulator backend
+
+**Linking host code:**
+```bash
+g++ host_code.o -o app \
+    -L/path/to/vortex/build/runtime \
+    -L/path/to/vortex_hip/runtime/hip_vortex_runtime/lib \
+    -lvortex -lvortex-simx -lhip_vortex_runtime \
+    -Wl,-rpath,/path/to/vortex/build/runtime
+```
+
+### Build llvm-vortex (Device Code Compiler)
+
+llvm-vortex is the LLVM backend that compiles LLVM IR to Vortex RISC-V binaries. This is needed to convert device code from MLIR/LLVM IR to executable kernel binaries.
+
+```bash
+cd llvm-vortex
+
 mkdir build && cd build
-../configure --tooldir=/opt/riscv-gnu-toolchain
-make
+cmake -G Ninja ../llvm \
+    -DLLVM_ENABLE_PROJECTS="clang" \
+    -DLLVM_TARGETS_TO_BUILD="RISCV" \
+    -DCMAKE_BUILD_TYPE=Release
+
+cmake --build . --target clang llc
+
+# Verify
+./bin/llc --version | grep riscv
+```
+
+**Usage (after GPUToVortex lowering produces LLVM IR):**
+```bash
+# Compile LLVM IR to Vortex RISC-V object
+./llvm-vortex/build/bin/llc -march=riscv32 -mcpu=generic-rv32 \
+    -mattr=+m,+f kernel.ll -o kernel.o
+
+# Link to create kernel binary
+riscv32-unknown-elf-ld kernel.o -o kernel.vxbin
 ```
 
 ---
