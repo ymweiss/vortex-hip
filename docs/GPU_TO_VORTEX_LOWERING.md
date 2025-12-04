@@ -16,8 +16,26 @@
 | `gpu.func` | Lower to LLVM function with kernel attribute |
 | `gpu.block_id {x\|y\|z}` | CSR read: `csrr blockIdx.{x\|y\|z}` |
 | `gpu.thread_id {x\|y\|z}` | CSR read: `csrr threadIdx.{x\|y\|z}` |
-| `gpu.barrier` | `vx_barrier()` intrinsic |
+| `gpu.barrier` | `vx_barrier(barrier_id, num_warps)` - see below |
 | `gpu.return` | Standard ret (handled by gpu-to-llvm) |
+
+### Barrier Lowering Details
+
+```c
+// Vortex signature (from vx_intrinsics.h)
+void vx_barrier(int barrier_id, int num_warps);
+```
+
+- **barrier_id:** Unique ID for this barrier (use 0 for simple cases, or assign unique IDs per barrier site)
+- **num_warps:** Number of warps participating in the barrier
+
+For `gpu.barrier` lowering:
+```llvm
+; Get number of warps in the block
+%num_warps = call i32 @vx_num_warps()
+; Issue barrier
+call void @vx_barrier(i32 0, i32 %num_warps)
+```
 
 ---
 
