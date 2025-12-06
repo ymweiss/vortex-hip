@@ -50,9 +50,11 @@ cmake -G Ninja .. \
     -DMLIR_DIR=$PWD/../llvm-project/build/lib/cmake/mlir \
     -DCLANG_DIR=$PWD/../llvm-project/build/lib/cmake/clang \
     -DLLVM_TARGETS_TO_BUILD="host;NVPTX" \
-    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_BUILD_TYPE=Release \
+    -DPOLYGEIST_ENABLE_CUDA_SYNTAX_ONLY=1
 ninja cgeist polygeist-opt
 cd ..
+
 
 # Verify
 ./build/bin/cgeist --version
@@ -180,7 +182,7 @@ This script:
 ### Step 4: Compile Host Code
 
 ```bash
-g++ -c vecadd_transformed.cu -o vecadd_host.o \
+g++ -x c++ -c vecadd_transformed.cu -o vecadd_host.o \
     -I runtime/hip_vortex_runtime/include \
     -std=c++17
 ```
