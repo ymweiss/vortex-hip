@@ -10,11 +10,12 @@
 
 ### Prerequisites
 
-- Linux (tested on Ubuntu 22.04)
-- GCC 11+ or Clang 14+
+- Linux (tested on Ubuntu 22.04, 24.04)
+- GCC 11 or Clang 14+
 - CMake 3.20+
 - Ninja (recommended) or Make
 - Python 3.8+
+- storage space: 200 GB
 
 ### Clone and Initialize
 
