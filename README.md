@@ -212,7 +212,21 @@ The pipeline uses split compilation - host and device code are compiled separate
     host_executable             kernel.mlir (GPU dialect)
             │                           │
             │                           ▼
-            │                   [GPUToVortex pass]
+            │                   [--convert-gpu-to-vortex]
+            │                   (Vortex intrinsics + metadata)
+            │                           │
+            │                           ▼
+            │                   [--gpu-to-llvm]
+            │                           │
+            │                           ▼
+            │                   [--generate-vortex-main]
+            │                   (main() + kernel_body wrapper)
+            │                           │
+            │                           ▼
+            │                   [mlir-translate --mlir-to-llvmir]
+            │                           │
+            │                           ▼
+            │                   [llvm-vortex clang → RISC-V]
             │                           │
             │                           ▼
             │                   kernel.vxbin
@@ -222,6 +236,28 @@ The pipeline uses split compilation - host and device code are compiled separate
                         ▼
                    Runtime loads
                    kernel binary
+```
+
+### Device Compilation Pipeline
+
+```bash
+# 1. HIP → GPU dialect MLIR
+./Polygeist/build/bin/cgeist kernel.hip --emit-cuda -S -o kernel.mlir
+
+# 2. GPU dialect → Vortex LLVM dialect
+./Polygeist/build/bin/polygeist-opt kernel.mlir \
+    --convert-gpu-to-vortex \
+    --gpu-to-llvm \
+    --generate-vortex-main \
+    -o kernel_vortex.mlir
+
+# 3. MLIR LLVM Dialect → LLVM IR (textual)
+# mlir-translate is built with Polygeist's LLVM
+./Polygeist/llvm-project/build/bin/mlir-translate \
+    --mlir-to-llvmir kernel_vortex.mlir -o kernel.ll
+
+# 4. LLVM IR → Vortex RISC-V binary
+llvm-vortex/build/bin/clang -target riscv32 kernel.ll -o kernel.vxbin
 ```
 
 ---
@@ -271,28 +307,41 @@ vortex_hip/
 - 13 runtime tests passing on Vortex SimX simulator
 - Memory management, device management, kernel launch
 
-### 🔄 Phase 2: Kernel Compilation (In Progress)
+### 🔄 Phase 2: Kernel Compilation (90% Complete)
 
 **Completed:**
 - ✅ Polygeist compiles HIP kernels to GPU dialect MLIR
 - ✅ 21/22 test kernels compile successfully
 - ✅ Source transformation script (`inject_kernel_launchers.py`)
 - ✅ Split compilation model validated
+- ✅ **`--convert-gpu-to-vortex` pass** - Lowers GPU intrinsics to Vortex:
+  - `gpu.thread_id` → `vx_get_threadIdx()` TLS accessor
+  - `gpu.block_id` → `vx_get_blockIdx()` TLS accessor
+  - `gpu.block_dim` → `vx_get_blockDim()` TLS accessor
+  - `gpu.grid_dim` → `vx_get_gridDim()` TLS accessor
+  - `gpu.barrier` → `vx_barrier(bar_id, num_threads)`
+  - `printf` → `vx_printf`
+  - Kernel metadata extraction (JSON + C header generation)
+- ✅ **`--generate-vortex-main` pass** - Generates Vortex entry point:
+  - `main()` function that reads args from `VX_CSR_MSCRATCH` (0x340)
+  - `kernel_body(void* args)` wrapper that unpacks arguments
+  - `vx_spawn_threads()` integration for thread dispatch
 
-**GPU Dialect Operations Generated:**
+**GPU Dialect Operations Lowered:**
 - `gpu.module`, `gpu.func` - kernel definitions
-- `gpu.block_id`, `gpu.thread_id` - thread indexing
-- `gpu.barrier` - thread synchronization (when shared memory used)
-- `gpu.launch_func` - kernel launches
+- `gpu.block_id`, `gpu.thread_id` - thread indexing → Vortex TLS
+- `gpu.block_dim`, `gpu.grid_dim` - dimension queries → Vortex TLS
+- `gpu.barrier` - synchronization → `vx_barrier()`
+- `gpu.launch_func` - kernel launches → metadata extraction
 
 **Remaining:**
-- GPUToVortex MLIR pass (lower GPU dialect to Vortex)
-- LLVM IR generation
-- Vortex binary generation
+- End-to-end integration testing
+- Vortex SimX simulator testing
+- Performance optimization
 
 ### ⏳ Phase 3: Full Integration (Planned)
 
-- End-to-end compilation pipeline
+- End-to-end compilation pipeline automation
 - Performance optimizations
 - Extended HIP API coverage
 
@@ -380,5 +429,5 @@ The `inject_kernel_launchers.py` script uses `__CUDA__` macro (defined by Polyge
 
 ---
 
-**Last Updated:** 2025-11-30
-**Current Phase:** Phase 2 (Kernel Compilation)
+**Last Updated:** 2025-12-05
+**Current Phase:** Phase 2 (Kernel Compilation - 90% Complete)

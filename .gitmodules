@@ -1,6 +1,6 @@
 [submodule "vortex"]
 	path = vortex
-	url = https://github.com/vortexgpgpu/vortex
+	url = https://github.com/ymweiss/vortex
 [submodule "llvm-vortex"]
 	path = llvm-vortex
 	url = https://github.com/vortexgpgpu/llvm
