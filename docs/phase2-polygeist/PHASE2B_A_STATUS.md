@@ -2,8 +2,8 @@
 
 **Developer:** Developer A
 **Branch:** `yaakov/phase-2B-A` (both vortex_hip and Polygeist repos)
-**Date:** November 16, 2025
-**Status:** 🟢 Thread Model & Synchronization Complete (70%), Kernel Launch Pending (30%)
+**Date:** December 5, 2025
+**Status:** 🟢 Core Implementation Complete (90%), Integration Testing Pending (10%)
 
 ---
 
@@ -16,17 +16,21 @@ Phase 2B Developer A implements the GPU-to-Vortex lowering pass that converts ML
 - Block & Grid dimension queries (blockDim, gridDim)
 - Barrier synchronization (gpu.barrier → vx_barrier)
 - TLS-based thread model infrastructure
+- Printf lowering (printf → vx_printf)
+- **Kernel metadata JSON/header generation**
+- **Vortex main() wrapper generation (`--generate-vortex-main` pass)**
+- **kernel_body callback wrapper generation**
+- **vx_spawn_threads integration**
 - FileCheck test suite (185 lines, all passing)
 - Build infrastructure optimizations
 - Documentation suite
 
 ### In Progress (🔄)
-- Metadata extraction design for kernel arguments
+- End-to-end integration testing with full pipeline
 
 ### Pending Work (⏸️)
-- Kernel launch infrastructure (gpu.launch_func lowering)
-- Argument struct generation based on metadata
-- Integration testing with full HIP programs
+- Integration testing with SimX simulator
+- Performance optimization
 
 ---
 
@@ -34,18 +38,25 @@ Phase 2B Developer A implements the GPU-to-Vortex lowering pass that converts ML
 
 ### Pass Architecture
 
-**Location:** `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp`
-**Current Size:** ~330 lines
-**Target Size:** ~520 lines (estimated)
-**Completion:** ~70%
+**Two-Pass Design:**
+1. `--convert-gpu-to-vortex` - Lowers GPU intrinsics and extracts metadata
+2. `--generate-vortex-main` - Generates main() wrapper and kernel_body (runs after gpu-to-llvm)
 
-**Pass Structure:**
+**Location:** `Polygeist/lib/polygeist/Passes/`
+- `ConvertGPUToVortex.cpp` (~760 lines)
+- `GenerateVortexMain.cpp` (~280 lines)
+
+**Pass 1: ConvertGPUToVortex**
 ```cpp
 namespace {
 
+// Preprocessing
+static void consolidatePolygeistAlternatives(ModuleOp)
+static void removeDuplicateKernels(ModuleOp)
+
 // Helper functions for TLS access
-static LLVM::GlobalOp getOrCreateDim3TLSGlobal(...)  // Lines 45-73
-static Value createDim3TLSAccess(...)                // Lines 76-118
+static LLVM::LLVMFuncOp getOrCreateDim3TLSAccessor(...)
+static Value createDim3TLSAccess(...)
 
 // Conversion patterns
 struct ThreadIdOpLowering : public ConvertOpToLLVMPattern<gpu::ThreadIdOp>
@@ -53,7 +64,11 @@ struct BlockIdOpLowering : public ConvertOpToLLVMPattern<gpu::BlockIdOp>
 struct BlockDimOpLowering : public ConvertOpToLLVMPattern<gpu::BlockDimOp>
 struct GridDimOpLowering : public ConvertOpToLLVMPattern<gpu::GridDimOp>
 struct BarrierOpLowering : public ConvertOpToLLVMPattern<gpu::BarrierOp>
-// TODO: struct LaunchFuncOpLowering : public ConvertOpToLLVMPattern<gpu::LaunchFuncOp>
+struct PrintfOpLowering : public OpRewritePattern<LLVM::CallOp>
+struct LaunchFuncMetadataExtraction : public OpRewritePattern<gpu::LaunchFuncOp>
+
+// Metadata generation
+static void emitKernelMetadata(gpu::GPUFuncOp, StringRef outputDir)
 
 // Pass definition
 struct ConvertGPUToVortexPass : public PassWrapper<...>
@@ -61,9 +76,27 @@ struct ConvertGPUToVortexPass : public PassWrapper<...>
 } // namespace
 ```
 
+**Pass 2: GenerateVortexMain**
+```cpp
+namespace {
+
+// Vortex CSR: VX_CSR_MSCRATCH = 0x340
+
+// Helper functions
+static LLVM::LLVMFuncOp findKernelFunction(ModuleOp)
+static LLVM::LLVMFuncOp getOrDeclareVxSpawnThreads(ModuleOp, OpBuilder&)
+static LLVM::LLVMFuncOp generateKernelBodyWrapper(ModuleOp, LLVMFuncOp kernel, OpBuilder&)
+static LLVM::LLVMFuncOp generateMainFunction(ModuleOp, LLVMFuncOp body, LLVMFuncOp spawn, OpBuilder&)
+
+// Pass definition
+struct GenerateVortexMainPass : public PassWrapper<...>
+
+} // namespace
+```
+
 **Registration:**
-- File: `Polygeist/lib/polygeist/Passes/Passes.cpp`
-- Command: `-convert-gpu-to-vortex`
+- File: `Polygeist/include/polygeist/Passes/Passes.td`
+- Commands: `--convert-gpu-to-vortex`, `--generate-vortex-main`
 - Used by: `polygeist-opt` tool
 
 ---

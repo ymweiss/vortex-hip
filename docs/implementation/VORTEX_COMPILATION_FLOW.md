@@ -52,7 +52,7 @@ Vortex supports two distinct programming models:
 
 ### 1.2 HIP Integration
 
-**Status**: In development (70% kernel-side, 30% host-side remaining)
+**Status**: In development (90% complete - core passes implemented, integration testing remaining)
 
 **Characteristics**:
 - Unified source files (`.hip`) with host and device code
@@ -649,7 +649,7 @@ __global__ void vectorAdd(int* a, int* b, int* c, int count) {
 
 #### 3.2.2 HIP Kernel Compilation Pipeline
 
-**Current Status**: 70% implemented
+**Current Status**: 90% implemented (core passes complete)
 
 ```
 basic.hip (Unified HIP source)
@@ -673,7 +673,7 @@ MLIR: GPU Dialect (kernel code)
       }
     }
     ↓
-[ConvertGPUToVortex pass - KERNEL SIDE] ✓ 70% COMPLETE
+[ConvertGPUToVortex pass - KERNEL SIDE] ✓ COMPLETE
     - Preprocessing: Consolidate polygeist.alternatives (DONE ✓)
     - Remove duplicate kernels (DONE ✓)
     - Lower gpu.thread_id → vx_get_threadIdx() TLS access (DONE ✓)
@@ -681,7 +681,9 @@ MLIR: GPU Dialect (kernel code)
     - Lower gpu.block_dim → vx_get_blockDim() TLS access (DONE ✓)
     - Lower gpu.grid_dim → vx_get_gridDim() TLS access (DONE ✓)
     - Lower gpu.barrier → llvm.call @vx_barrier (DONE ✓)
+    - Lower printf → vx_printf (DONE ✓)
     - Extract metadata from gpu.launch_func (DONE ✓)
+    - Emit JSON metadata + C header files (DONE ✓)
     ↓
 MLIR: GPU func with LLVM intrinsics
     gpu.module @__polygeist_gpu_module {
@@ -702,15 +704,35 @@ MLIR: GPU func with LLVM intrinsics
       }
     }
     ↓
-[Standard GPU lowering passes] ⚠️ NEED VERIFICATION
-    - --convert-gpu-to-llvm (or custom variant)
+[--gpu-to-llvm pass]
     - gpu.func → llvm.func
     - gpu.module → plain module
     ↓
-LLVM Dialect (pure RISC-V kernel)
-    - llvm.func @vectorAdd(i64, i32, i32, !llvm.ptr, !llvm.ptr)
-    - All operations in LLVM dialect
-    - Calls to vx_get_threadIdx, vx_barrier intrinsics
+[GenerateVortexMain pass] ✓ NEW - COMPLETE
+    - Generates main() entry point:
+        - Reads args from VX_CSR_MSCRATCH (0x340) via inline assembly
+        - Calls vx_spawn_threads() with kernel callback
+    - Generates kernel_body(void* args) wrapper:
+        - Unpacks arguments from offset 24 (skip grid_dim[3] + block_dim[3])
+        - Calls the original lowered kernel function
+    - Declares vx_spawn_threads runtime function
+    ↓
+LLVM Dialect (pure RISC-V kernel with Vortex entry point)
+    module {
+      llvm.func @vx_spawn_threads(i32, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+
+      llvm.func @vectorAdd_kernel(...) { ... }  // Original kernel
+
+      llvm.func @kernel_body(%args: !llvm.ptr) {
+        // Unpack args from offset 24
+        // Call @vectorAdd_kernel(...)
+      }
+
+      llvm.func @main() -> i32 {
+        // csrr %args, 0x340  (VX_CSR_MSCRATCH)
+        // Call vx_spawn_threads(1, grid_dim, block_dim, @kernel_body, args)
+      }
+    }
     ↓
 [mlir-translate --mlir-to-llvmir]
     - Convert to LLVM IR
@@ -720,13 +742,50 @@ LLVM IR (.ll file, RISC-V target)
 [llvm-vortex clang++]
     - Target: riscv32-unknown-elf
     - March: rv32imaf +vortex
-    - Links: libvortex.a (provides vx_get_* functions)
+    - Links: libvortex.a (provides vx_spawn_threads, vx_get_* functions)
     ↓
 kernel.elf (RISC-V ELF)
     ↓
 [vxbin.py]
     ↓
 kernel.vxbin (Vortex binary format)
+```
+
+#### Complete Kernel Compilation Pipeline Command
+
+```bash
+# 1. HIP → GPU dialect MLIR
+./Polygeist/build/bin/cgeist kernel.hip \
+    --cuda-lower --cuda-gpu-arch=sm_60 \
+    -nocudalib -nocudainc \
+    --function='*' --emit-cuda -S \
+    -o kernel_gpu.mlir
+
+# 2. GPU dialect → Vortex LLVM dialect (with metadata extraction)
+./Polygeist/build/bin/polygeist-opt kernel_gpu.mlir \
+    --convert-gpu-to-vortex \
+    -o kernel_vortex.mlir
+# This also generates: kernel.meta.json, kernel_args.h
+
+# 3. Lower to pure LLVM dialect
+./Polygeist/build/bin/polygeist-opt kernel_vortex.mlir \
+    --gpu-to-llvm \
+    --generate-vortex-main \
+    --convert-func-to-llvm \
+    --reconcile-unrealized-casts \
+    -o kernel_llvm.mlir
+
+# 4. MLIR → LLVM IR
+mlir-translate --mlir-to-llvmir kernel_llvm.mlir -o kernel.ll
+
+# 5. LLVM IR → Vortex RISC-V binary
+llvm-vortex/build/bin/clang -target riscv32 \
+    -march=rv32imaf -mabi=ilp32f \
+    kernel.ll -o kernel.elf \
+    -L$(VORTEX_HOME)/kernel -lvortex
+
+# 6. ELF → vxbin
+$(VORTEX_HOME)/kernel/scripts/vxbin.py kernel.elf kernel.vxbin
 ```
 
 ### 3.3 Host-Kernel Separation in MLIR
@@ -962,7 +1021,7 @@ hipError_t hipRegisterKernel(const char* kernel_name, const char* kernel_file) {
 | **Binary Format** | .vxbin | .vxbin (same) |
 | **Runtime** | libvortex.so | libvortex.so (same) |
 | **Portability** | Vortex-specific | HIP/CUDA-compatible |
-| **Status** | Production ✅ | In development (70%) |
+| **Status** | Production ✅ | In development (90%) |
 
 ### 7.2 Code Comparison
 
@@ -1681,22 +1740,27 @@ HIP Source → Offline Compiler → .vxbin →
 
 ### 8.1 Compiler Modifications Needed
 
-1. **HIP Intrinsic Lowering**:
-   - Lower `threadIdx/blockIdx/blockDim/gridDim` to TLS reads or spawn variables
-   - Convert `__syncthreads()` to `vx_barrier()`
-   - Map `__shared__` to LMEM allocation
+1. **HIP Intrinsic Lowering** ✅ COMPLETE:
+   - Lower `threadIdx/blockIdx/blockDim/gridDim` to TLS reads (`--convert-gpu-to-vortex`)
+   - Convert `__syncthreads()` to `vx_barrier()` (`--convert-gpu-to-vortex`)
+   - Lower `printf` to `vx_printf` (`--convert-gpu-to-vortex`)
 
-2. **Kernel Wrapping**:
-   - Generate spawn framework wrapper (like `vx_spawn.c`)
-   - Set up `blockIdx/threadIdx` calculation per iteration
-   - Handle grid/block dimension loops
+2. **Kernel Wrapping** ✅ COMPLETE:
+   - Generate `main()` entry point with CSR read (`--generate-vortex-main`)
+   - Generate `kernel_body()` wrapper that unpacks arguments (`--generate-vortex-main`)
+   - Declare `vx_spawn_threads()` runtime function (`--generate-vortex-main`)
 
-3. **Shared Memory Allocation**:
+3. **Metadata Generation** ✅ COMPLETE:
+   - Extract kernel argument types and offsets (`--convert-gpu-to-vortex`)
+   - Emit JSON metadata files for runtime (`--convert-gpu-to-vortex`)
+   - Emit C header files for compile-time usage (`--convert-gpu-to-vortex`)
+
+4. **Shared Memory Allocation** ⏸️ PENDING:
    - Calculate total `__shared__` memory per block
    - Generate `__local_mem(size)` allocation calls
    - Offset by `__local_group_id`
 
-4. **Divergence Handling** (optional):
+5. **Divergence Handling** (optional, lower priority):
    - Insert `vx_split()/vx_join()` for divergent branches
    - Or rely on LLVM's existing infrastructure
 
@@ -1761,26 +1825,49 @@ vx_spawn_threads(3, gridDim, blockDim, kernel_func, args);
 
 ### 9.2 HIP Compilation Strategy
 
-**Phase 1: Leverage Polygeist for Parsing**
+**Phase 1: Leverage Polygeist for Parsing** ✅ COMPLETE
 - Use Polygeist to parse HIP syntax → GPU dialect IR
 - Manual observation of patterns (already done)
 
-**Phase 2: Custom Lowering Pass**
-- Create MLIR pass to lower GPU dialect → Vortex spawn API calls
-- Map GPU operations to Vortex intrinsics
-- Generate LLVM IR with Vortex-specific constructs
+**Phase 2: Custom Lowering Pass** ✅ COMPLETE
+- `--convert-gpu-to-vortex` pass lowers GPU dialect → Vortex intrinsics
+- Maps GPU operations (thread_id, block_id, barrier) to Vortex TLS/intrinsics
+- Generates metadata files (JSON + C headers)
 
-**Phase 3: Use LLVM-Vortex Backend**
+**Phase 3: Main Wrapper Generation** ✅ COMPLETE (NEW)
+- `--generate-vortex-main` pass creates Vortex entry point
+- Generates `main()` function that reads args from CSR and calls `vx_spawn_threads`
+- Generates `kernel_body()` wrapper that unpacks arguments
+
+**Phase 4: Use LLVM-Vortex Backend** ⏸️ INTEGRATION TESTING
 - Feed LLVM IR to existing LLVM-Vortex backend
 - Backend handles RISC-V code generation with `+vortex` features
 - Link with `libvortex.a` using standard Vortex build process
 
-**Phase 4: Runtime Integration**
-- Create HIP runtime wrapper (`hip_runtime.h` → Vortex API)
-- Use existing Vortex device management
+**Phase 5: Runtime Integration** ✅ COMPLETE (Phase 1)
+- HIP runtime wrapper (`hip_runtime.h` → Vortex API) exists
+- Device management via existing Vortex runtime
 - Upload .vxbin kernels using `vx_upload_kernel_file()`
 
 This approach **reuses maximum infrastructure** while adding HIP-specific lowering at the right abstraction layer (MLIR/GPU dialect).
+
+### 9.3 Available MLIR Passes
+
+| Pass | Command | Purpose | Status |
+|------|---------|---------|--------|
+| ConvertGPUToVortex | `--convert-gpu-to-vortex` | Lower GPU intrinsics, extract metadata | ✅ Complete |
+| GenerateVortexMain | `--generate-vortex-main` | Generate main() + kernel_body wrapper | ✅ Complete |
+
+**Example Pipeline:**
+```bash
+polygeist-opt input.mlir \
+    --convert-gpu-to-vortex \
+    --gpu-to-llvm \
+    --generate-vortex-main \
+    --convert-func-to-llvm \
+    --reconcile-unrealized-casts \
+    -o output.mlir
+```
 
 ---
 
@@ -1791,10 +1878,17 @@ This approach **reuses maximum infrastructure** while adding HIP-specific loweri
 - `vortex/build/config.mk` - Build configuration
 - `vortex/ci/toolchain_install.sh.in` - Toolchain setup
 
+**HIP-to-Vortex MLIR Passes:**
+- `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp` - GPU intrinsic lowering + metadata
+- `Polygeist/lib/polygeist/Passes/GenerateVortexMain.cpp` - main() + kernel_body generation
+- `Polygeist/include/polygeist/Passes/Passes.td` - Pass definitions
+- `Polygeist/include/polygeist/Passes/Passes.h` - Pass declarations
+
 **Kernel Library:**
 - `vortex/kernel/Makefile` - libvortex.a build
 - `vortex/kernel/src/vx_spawn.c` - Spawn framework
 - `vortex/kernel/include/vx_intrinsics.h` - GPU primitives
+- `vortex/kernel/include/vx_spawn.h` - Spawn API (vx_spawn_threads)
 
 **Linker and Binary:**
 - `vortex/kernel/scripts/link32.ld` - Linker script
@@ -1803,3 +1897,9 @@ This approach **reuses maximum infrastructure** while adding HIP-specific loweri
 **Examples:**
 - `vortex/tests/opencl/` - OpenCL test kernels
 - `vortex/tests/opencl/common.mk` - Build example
+- `hip_tests/mlir_output/` - Generated MLIR from HIP tests
+
+**Documentation:**
+- `docs/GPU_TO_VORTEX_LOWERING.md` - Lowering reference
+- `docs/phase2-polygeist/PHASE2B_A_STATUS.md` - Implementation status
+- `docs/implementation/VORTEX_COMPILATION_FLOW.md` - This document
