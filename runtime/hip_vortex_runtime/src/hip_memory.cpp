@@ -91,6 +91,46 @@ hipError_t hipMemcpy(void* dst, const void* src, size_t sizeBytes, hipMemcpyKind
     return hipSuccess;
 }
 
+hipError_t hipMallocHost(void** ptr, size_t size) {
+    if (ptr == nullptr) {
+        return hipErrorInvalidValue;
+    }
+
+    *ptr = malloc(size);
+    if (*ptr == nullptr) {
+        return hipErrorOutOfMemory;
+    }
+
+    return hipSuccess;
+}
+
+hipError_t hipFreeHost(void* ptr) {
+    if (ptr != nullptr) {
+        free(ptr);
+    }
+    return hipSuccess;
+}
+
+hipError_t hipMemGetInfo(size_t* free_mem, size_t* total_mem) {
+    if (free_mem == nullptr || total_mem == nullptr) {
+        return hipErrorInvalidValue;
+    }
+
+    if (g_vortex_device == nullptr) {
+        return hipErrorNotInitialized;
+    }
+
+    uint64_t mem_free, mem_used;
+    int ret = vx_mem_info(g_vortex_device, &mem_free, &mem_used);
+    if (ret != 0) {
+        return hipErrorUnknown;
+    }
+
+    *free_mem = mem_free;
+    *total_mem = mem_free + mem_used;
+    return hipSuccess;
+}
+
 hipError_t hipMemset(void* devPtr, int value, size_t sizeBytes) {
     // Allocate temporary host buffer, fill it, copy to device
     // This is inefficient but works for now
