@@ -3,9 +3,8 @@
 // Tests memory fence operations to ensure proper memory ordering
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
+#include <stdlib.h>
+#include <stdio.h>
 
 #ifndef TYPE
 #define TYPE int32_t
@@ -60,9 +59,9 @@ int main(int argc, char *argv[]) {
   uint32_t num_points = num_tasks * task_size;
   uint32_t buf_size = num_points * sizeof(TYPE);
 
-  std::cout << "number of tasks: " << num_tasks << std::endl;
-  std::cout << "task size: " << task_size << std::endl;
-  std::cout << "total points: " << num_points << std::endl;
+  printf("number of tasks: %u\n", num_tasks);
+  printf("task size: %u\n", task_size);
+  printf("total points: %u\n", num_points);
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
 
   // Allocate host buffers
@@ -100,7 +99,7 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipMemcpy(h_dst.data(), d_dst, buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   for (uint32_t i = 0; i < num_points; ++i) {
     TYPE ref = h_src0[i] + h_src1[i];
@@ -120,10 +119,10 @@ int main(int argc, char *argv[]) {
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

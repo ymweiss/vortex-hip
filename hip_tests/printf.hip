@@ -2,10 +2,8 @@
 // Converted from Vortex regression test: vortex/tests/regression/printf
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cstring>
+#include <stdlib.h>
+#include <stdio.h>
 
 #define HIP_CHECK(call) \
   do { \
@@ -52,11 +50,11 @@ int main(int argc, char *argv[]) {
   uint32_t num_points = count * 64;  // Using a reasonable thread count
   uint32_t buf_size = num_points * sizeof(char);
 
-  std::cout << "number of points: " << num_points << std::endl;
+  printf("number of points: %u\n", num_points);
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
 
   // Allocate host buffer
-  std::cout << "allocate host buffers" << std::endl;
+  printf("allocate host buffers\n");
   std::vector<char> h_src(num_points);
 
   // Generate input data
@@ -65,16 +63,16 @@ int main(int argc, char *argv[]) {
   }
 
   // Allocate device memory
-  std::cout << "allocate device memory" << std::endl;
+  printf("allocate device memory\n");
   char* d_src;
   HIP_CHECK(hipMalloc(&d_src, buf_size));
 
   // Upload source buffer
-  std::cout << "upload source buffer" << std::endl;
+  printf("upload source buffer\n");
   HIP_CHECK(hipMemcpy(d_src, h_src.data(), buf_size, hipMemcpyHostToDevice));
 
   // Launch kernel
-  std::cout << "launch kernel" << std::endl;
+  printf("launch kernel\n");
   int threads_per_block = 64;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
@@ -82,13 +80,13 @@ int main(int argc, char *argv[]) {
                      d_src, num_points);
 
   // Wait for completion
-  std::cout << "wait for completion" << std::endl;
+  printf("wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Cleanup
-  std::cout << "cleanup" << std::endl;
+  printf("cleanup\n");
   HIP_CHECK(hipFree(d_src));
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

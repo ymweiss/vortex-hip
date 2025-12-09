@@ -2,10 +2,8 @@
 // Converted from Vortex regression test: vortex/tests/regression/stencil3d
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
+#include <stdlib.h>
+#include <stdio.h>
 
 #ifndef TYPE
 #define TYPE float
@@ -214,7 +212,7 @@ int main(int argc, char *argv[]) {
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
 
   // Allocate host buffers
-  std::cout << "allocate host buffers" << std::endl;
+  printf("allocate host buffers\n");
   std::vector<TYPE> h_in(size_cubed);
   std::vector<TYPE> h_out(size_cubed);
 
@@ -224,17 +222,17 @@ int main(int argc, char *argv[]) {
   }
 
   // Allocate device memory
-  std::cout << "allocate device memory" << std::endl;
+  printf("allocate device memory\n");
   TYPE *d_in, *d_out;
   HIP_CHECK(hipMalloc(&d_in, buf_size));
   HIP_CHECK(hipMalloc(&d_out, buf_size));
 
   // Upload source buffer
-  std::cout << "upload source buffer" << std::endl;
+  printf("upload source buffer\n");
   HIP_CHECK(hipMemcpy(d_in, h_in.data(), buf_size, hipMemcpyHostToDevice));
 
   // Launch kernel
-  std::cout << "launch kernel" << std::endl;
+  printf("launch kernel\n");
   dim3 threads_per_block(block_size, block_size, block_size);
   dim3 num_blocks(size / block_size, size / block_size, size / block_size);
 
@@ -242,15 +240,15 @@ int main(int argc, char *argv[]) {
                      d_in, d_out, size);
 
   // Wait for completion
-  std::cout << "wait for completion" << std::endl;
+  printf("wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Download destination buffer
-  std::cout << "download destination buffer" << std::endl;
+  printf("download destination buffer\n");
   HIP_CHECK(hipMemcpy(h_out.data(), d_out, buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   {
     std::vector<TYPE> h_ref(size_cubed);
@@ -264,16 +262,16 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  std::cout << "cleanup" << std::endl;
+  printf("cleanup\n");
   HIP_CHECK(hipFree(d_in));
   HIP_CHECK(hipFree(d_out));
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

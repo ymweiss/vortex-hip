@@ -3,11 +3,7 @@
 // Converted from Vortex regression test: vortex/tests/regression/dogfood
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
-#include <cstring>
+#include <stdlib.h>
 #include <limits>
 
 #define FLOAT_ULP 6
@@ -476,8 +472,8 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  std::cout << "Dogfood Arithmetic Operations Test Suite" << std::endl;
-  std::cout << "Number of points: " << num_points << std::endl;
+  printf("Dogfood Arithmetic Operations Test Suite\n");
+  printf("Number of points: %u\n", num_points);
   std::cout << "Buffer size: " << num_points * 4 << " bytes" << std::endl;
   std::cout << "Test range: " << testid_s << " - " << testid_e << std::endl;
 
@@ -772,9 +768,9 @@ int main(int argc, char *argv[]) {
   }
 
   // Print summary
-  std::cout << "\n========================================" << std::endl;
-  std::cout << "Test Summary:" << std::endl;
-  std::cout << "========================================" << std::endl;
+  printf("\n========================================\n");
+  printf("Test Summary:\n");
+  printf("========================================\n");
 
   int total_tests = results.size();
   int passed_tests = 0;
@@ -794,11 +790,11 @@ int main(int argc, char *argv[]) {
     total_errors += result.errors;
   }
 
-  std::cout << "========================================" << std::endl;
+  printf("========================================\n");
   std::cout << "Total: " << passed_tests << "/" << total_tests << " tests passed" << std::endl;
 
   if (total_errors == 0) {
-    std::cout << "\nALL TESTS PASSED!" << std::endl;
+    printf("\nALL TESTS PASSED!\n");
     return 0;
   } else {
     std::cout << "\nFOUND " << total_errors << " TOTAL ERRORS!" << std::endl;

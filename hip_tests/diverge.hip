@@ -3,10 +3,8 @@
 // Tests control flow divergence patterns: branches, loops, switches
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <algorithm>
+#include <stdlib.h>
+#include <stdio.h>
 
 #define HIP_CHECK(call) \
   do { \
@@ -194,8 +192,8 @@ int main(int argc, char *argv[]) {
   uint32_t num_points = size;
   uint32_t buf_size = num_points * sizeof(int32_t);
 
-  std::cout << "number of points: " << num_points << std::endl;
-  std::cout << "samples: " << samples << std::endl;
+  printf("number of points: %u\n", num_points);
+  printf("samples: %u\n", samples);
 
   // Allocate host buffers
   std::vector<int32_t> h_src(num_points);
@@ -228,7 +226,7 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipMemcpy(h_dst.data(), d_dst, buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   for (uint32_t i = 0; i < num_points; ++i) {
     int32_t ref = compute_reference(h_src.data(), i, samples);
@@ -247,10 +245,10 @@ int main(int argc, char *argv[]) {
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

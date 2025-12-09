@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 // ------------------------------------------------------------------
 // 1. Clang CUDA Built-in Variables

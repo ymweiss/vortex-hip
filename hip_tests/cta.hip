@@ -5,10 +5,8 @@
 // Each thread computes: globalId + src[localId] and writes to dst[globalId]
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cstring>
+#include <stdlib.h>
+#include <stdio.h>
 
 #define HIP_CHECK(call) \
   do { \
@@ -87,8 +85,8 @@ int main(int argc, char *argv[]) {
       blk_z = atoi(argv[i + 1]);
       i++;
     } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-      std::cout << "CTA Test." << std::endl;
-      std::cout << "Usage: [-x grid.x] [-y grid.y] [-z grid.z] [-a block.x] [-b block.y] [-c block.z] [-h help]" << std::endl;
+      printf("CTA Test.\n");
+      printf("Usage: [-x grid.x] [-y grid.y] [-z grid.z] [-a block.x] [-b block.y] [-c block.z] [-h help]\n");
       return 0;
     }
   }
@@ -101,14 +99,14 @@ int main(int argc, char *argv[]) {
   uint32_t src_buf_size = cta_size * sizeof(int);
   uint32_t dst_buf_size = total_threads * sizeof(int);
 
-  std::cout << "CTA size: " << cta_size << std::endl;
-  std::cout << "number of CTAs: " << cta_count << std::endl;
-  std::cout << "number of threads: " << total_threads << std::endl;
+  printf("CTA size: %u\n", cta_size);
+  printf("number of CTAs: %u\n", cta_count);
+  printf("number of threads: %u\n", total_threads);
   std::cout << "source buffer size: " << src_buf_size << " bytes" << std::endl;
   std::cout << "destination buffer size: " << dst_buf_size << " bytes" << std::endl;
 
   // Allocate host buffers
-  std::cout << "allocate host buffers" << std::endl;
+  printf("allocate host buffers\n");
   std::vector<int> h_src(cta_size);
   std::vector<int> h_dst(total_threads);
 
@@ -117,32 +115,32 @@ int main(int argc, char *argv[]) {
   }
 
   // Allocate device memory
-  std::cout << "allocate device memory" << std::endl;
+  printf("allocate device memory\n");
   int *d_src, *d_dst;
   HIP_CHECK(hipMalloc(&d_src, src_buf_size));
   HIP_CHECK(hipMalloc(&d_dst, dst_buf_size));
 
   // Upload source buffer
-  std::cout << "upload source buffer" << std::endl;
+  printf("upload source buffer\n");
   HIP_CHECK(hipMemcpy(d_src, h_src.data(), src_buf_size, hipMemcpyHostToDevice));
 
   // Launch kernel
-  std::cout << "launch kernel" << std::endl;
+  printf("launch kernel\n");
   dim3 grid(grd_x, grd_y, grd_z);
   dim3 block(blk_x, blk_y, blk_z);
 
   hipLaunchKernelGGL(cta_kernel, grid, block, 0, 0, d_src, d_dst);
 
   // Wait for completion
-  std::cout << "wait for completion" << std::endl;
+  printf("wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Download destination buffer
-  std::cout << "download destination buffer" << std::endl;
+  printf("download destination buffer\n");
   HIP_CHECK(hipMemcpy(h_dst.data(), d_dst, dst_buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   for (uint32_t i = 0; i < total_threads; ++i) {
     auto ref = i + h_src[i % cta_size];
@@ -153,16 +151,16 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  std::cout << "cleanup" << std::endl;
+  printf("cleanup\n");
   HIP_CHECK(hipFree(d_src));
   HIP_CHECK(hipFree(d_dst));
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

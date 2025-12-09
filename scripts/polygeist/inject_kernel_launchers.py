@@ -229,26 +229,46 @@ def extract_kernel_definitions(source: str) -> tuple:
     """Extract kernel function definitions from source.
 
     Returns tuple of (kernel_defs_text, source_without_kernels)
+
+    Uses brace matching to correctly handle nested braces in kernel bodies.
     """
-    # Pattern to match __global__ function with body
-    # Handles nested braces
-    kernel_pattern = re.compile(
+    # Find all __global__ function starts
+    kernel_start_pattern = re.compile(
         r'(__global__\s+'
         r'(?:__attribute__\s*\(\([^)]*\)\)\s*)?'
         r'(?:__launch_bounds__\s*\([^)]*\)\s*)?'
         r'void\s+\w+\s*\([^)]*\))\s*'
-        r'\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}',
+        r'\{',
         re.MULTILINE | re.DOTALL
     )
 
     kernels = []
-    remaining = source
+    ranges_to_remove = []
 
-    for match in kernel_pattern.finditer(source):
+    for match in kernel_start_pattern.finditer(source):
         signature = match.group(1)
-        body = match.group(2)
-        kernels.append(f'{signature}\n{{{body}}}')
-        remaining = remaining.replace(match.group(0), '', 1)
+        brace_start = match.end() - 1  # Position of opening brace
+
+        # Find matching closing brace using brace counting
+        brace_count = 1
+        pos = brace_start + 1
+        while brace_count > 0 and pos < len(source):
+            if source[pos] == '{':
+                brace_count += 1
+            elif source[pos] == '}':
+                brace_count -= 1
+            pos += 1
+
+        # Extract full kernel definition
+        kernel_end = pos
+        full_kernel = source[match.start():kernel_end]
+        kernels.append(full_kernel)
+        ranges_to_remove.append((match.start(), kernel_end))
+
+    # Remove kernels from source in reverse order to preserve positions
+    remaining = source
+    for start, end in reversed(ranges_to_remove):
+        remaining = remaining[:start] + remaining[end:]
 
     return ('\n\n'.join(kernels), remaining)
 

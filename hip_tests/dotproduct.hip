@@ -3,10 +3,7 @@
 // Computes dot product using parallel reduction with shared memory
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
+#include <stdlib.h>
 
 #ifndef TYPE
 #define TYPE float
@@ -75,7 +72,7 @@ int main(int argc, char *argv[]) {
   uint32_t num_points = size;
   uint32_t buf_size = num_points * sizeof(TYPE);
 
-  std::cout << "number of points: " << num_points << std::endl;
+  printf("number of points: %u\n", num_points);
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
 
   // Allocate host buffers
@@ -127,9 +124,9 @@ int main(int argc, char *argv[]) {
   }
 
   // Verify result
-  std::cout << "verify result" << std::endl;
-  std::cout << "CPU result: " << cpu_result << std::endl;
-  std::cout << "GPU result: " << gpu_result << std::endl;
+  printf("verify result\n");
+  printf("CPU result: %u\n", cpu_result);
+  printf("GPU result: %u\n", gpu_result);
 
   TYPE diff = std::abs(cpu_result - gpu_result);
   TYPE epsilon = FLOAT_ULP * std::numeric_limits<TYPE>::epsilon();
@@ -142,11 +139,11 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipFree(d_dst));
 
   if (!passed) {
-    std::cout << "Error: difference = " << diff << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("Error: difference = %u\n", diff);
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

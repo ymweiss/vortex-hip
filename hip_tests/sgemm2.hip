@@ -3,10 +3,8 @@
 // Computes C = A * B for square matrices using shared memory tiling
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
+#include <stdlib.h>
+#include <stdio.h>
 
 #ifndef TYPE
 #define TYPE float
@@ -122,7 +120,7 @@ int main(int argc, char *argv[]) {
   uint32_t buf_size = num_elements * sizeof(TYPE);
   uint32_t shared_mem_size = 2 * tile_size * tile_size * sizeof(TYPE);
 
-  std::cout << "data type: float" << std::endl;
+  printf("data type: float\n");
   std::cout << "matrix size: " << size << "x" << size << std::endl;
   std::cout << "tile size: " << tile_size << "x" << tile_size << std::endl;
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
@@ -166,7 +164,7 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipMemcpy(h_C.data(), d_C, buf_size, hipMemcpyDeviceToHost));
 
   // Verify result with CPU computation
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   {
     std::vector<TYPE> h_ref(num_elements);
@@ -201,10 +199,10 @@ int main(int argc, char *argv[]) {
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

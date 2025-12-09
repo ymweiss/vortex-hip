@@ -58,13 +58,18 @@ message(STATUS "Vortex kernel include dir: ${VORTEX_KERNEL_INCLUDE_DIR}")
 message(STATUS "Vortex library: ${VORTEX_LIBRARY}")
 
 # Vortex HIP Runtime Library
+# Using hip_vortex_runtime sources which have hipLaunchKernelByName support
 add_library(vortex_hip SHARED
-    src/vortex_hip_runtime.cpp
+    hip_vortex_runtime/src/hip_device.cpp
+    hip_vortex_runtime/src/hip_memory.cpp
+    hip_vortex_runtime/src/hip_kernel.cpp
+    hip_vortex_runtime/src/hip_error.cpp
 )
 
 target_include_directories(vortex_hip
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/hip_vortex_runtime/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${VORTEX_INCLUDE_DIR}

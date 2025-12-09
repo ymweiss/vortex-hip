@@ -2,10 +2,8 @@
 // Converted from Vortex regression test: vortex/tests/regression/dropout
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
+#include <stdlib.h>
+#include <stdio.h>
 
 #ifndef TYPE
 #define TYPE float
@@ -129,13 +127,13 @@ int main(int argc, char *argv[]) {
   float multiplier = 1.0f / (1.0f - dropout_p);
   uint32_t buf_size = num_points * sizeof(TYPE);
 
-  std::cout << "number of points: " << num_points << std::endl;
-  std::cout << "dropout probability: " << dropout_p << std::endl;
+  printf("number of points: %u\n", num_points);
+  printf("dropout probability: %u\n", dropout_p);
   std::cout << "data type: " << Comparator<TYPE>::type_str() << std::endl;
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
 
   // Allocate host buffers
-  std::cout << "allocate host buffers" << std::endl;
+  printf("allocate host buffers\n");
   std::vector<TYPE> h_src0(num_points);
   std::vector<TYPE> h_dst(num_points);
 
@@ -144,17 +142,17 @@ int main(int argc, char *argv[]) {
   }
 
   // Allocate device memory
-  std::cout << "allocate device memory" << std::endl;
+  printf("allocate device memory\n");
   TYPE *d_src0, *d_dst;
   HIP_CHECK(hipMalloc(&d_src0, buf_size));
   HIP_CHECK(hipMalloc(&d_dst, buf_size));
 
   // Upload source buffer
-  std::cout << "upload source buffer0" << std::endl;
+  printf("upload source buffer0\n");
   HIP_CHECK(hipMemcpy(d_src0, h_src0.data(), buf_size, hipMemcpyHostToDevice));
 
   // Launch kernel
-  std::cout << "launch kernel" << std::endl;
+  printf("launch kernel\n");
   int threads_per_block = 64;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
@@ -162,15 +160,15 @@ int main(int argc, char *argv[]) {
                      d_src0, d_dst, num_points, dropout_p, multiplier);
 
   // Wait for completion
-  std::cout << "wait for completion" << std::endl;
+  printf("wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Download destination buffer
-  std::cout << "download destination buffer" << std::endl;
+  printf("download destination buffer\n");
   HIP_CHECK(hipMemcpy(h_dst.data(), d_dst, buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   for (uint32_t i = 0; i < num_points; ++i) {
     float rand_value = RandomFloat(WangHash(i));
@@ -182,16 +180,16 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  std::cout << "cleanup" << std::endl;
+  printf("cleanup\n");
   HIP_CHECK(hipFree(d_src0));
   HIP_CHECK(hipFree(d_dst));
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

@@ -760,3 +760,111 @@ hipError_t __hipRegisterFunctionWithMetadata(void** function_address,
 
     return hipSuccess;
 }
+
+//=============================================================================
+// Vortex-Specific Kernel Launch (used by generated stubs)
+//=============================================================================
+
+// Kernel registry by name (for vortexLaunchKernel)
+static std::unordered_map<std::string, VortexKernelInfo> g_kernel_by_name;
+
+hipError_t vortexLaunchKernel(const char* kernel_name,
+                               dim3 gridDim,
+                               dim3 blockDim,
+                               const void* args,
+                               size_t args_size,
+                               const VortexKernelArgMeta* metadata,
+                               size_t num_args) {
+    if (!kernel_name || !args) {
+        SetLastError(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    hipError_t err = EnsureDeviceInitialized();
+    if (err != hipSuccess) {
+        return err;
+    }
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    // Look up kernel by name
+    auto it = g_kernel_by_name.find(kernel_name);
+    if (it == g_kernel_by_name.end()) {
+        SetLastError(hipErrorInvalidDeviceFunction);
+        return hipErrorInvalidDeviceFunction;
+    }
+
+    VortexKernelInfo& kernel_info = it->second;
+
+    // Ensure kernel is uploaded to device
+    err = EnsureKernelUploaded(kernel_info);
+    if (err != hipSuccess) {
+        return err;
+    }
+
+    // Build the argument buffer with Vortex header:
+    // Format: grid_dim (3x uint32), block_dim (3x uint32), then user args
+    std::vector<uint8_t> arg_buffer;
+
+    // Grid dimensions (3x uint32_t = 12 bytes)
+    uint32_t grid_dims[3] = {gridDim.x, gridDim.y, gridDim.z};
+    arg_buffer.insert(arg_buffer.end(),
+                     reinterpret_cast<uint8_t*>(grid_dims),
+                     reinterpret_cast<uint8_t*>(grid_dims) + sizeof(grid_dims));
+
+    // Block dimensions (3x uint32_t = 12 bytes)
+    uint32_t block_dims[3] = {blockDim.x, blockDim.y, blockDim.z};
+    arg_buffer.insert(arg_buffer.end(),
+                     reinterpret_cast<uint8_t*>(block_dims),
+                     reinterpret_cast<uint8_t*>(block_dims) + sizeof(block_dims));
+
+    // Append user arguments (already packed by generated stub)
+    const uint8_t* args_bytes = reinterpret_cast<const uint8_t*>(args);
+    arg_buffer.insert(arg_buffer.end(), args_bytes, args_bytes + args_size);
+
+    // Upload arguments to device
+    vx_buffer_h arg_buffer_device;
+    int result = vx_upload_bytes(g_device_state.device,
+                                  arg_buffer.data(),
+                                  arg_buffer.size(),
+                                  &arg_buffer_device);
+    if (result != 0) {
+        SetLastError(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    // Launch kernel
+    result = vx_start(g_device_state.device,
+                      kernel_info.kernel_binary,
+                      arg_buffer_device);
+
+    if (result != 0) {
+        SetLastError(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    return hipSuccess;
+}
+
+// Register kernel by name (for use with vortexLaunchKernel)
+hipError_t vortexRegisterKernel(const char* kernel_name,
+                                 const void* kernel_binary,
+                                 size_t kernel_size) {
+    if (!kernel_name || !kernel_binary) {
+        SetLastError(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    VortexKernelInfo info;
+    info.name = kernel_name;
+    info.kernel_binary = nullptr;
+    info.kernel_binary_data = kernel_binary;
+    info.binary_size = kernel_size;
+    info.num_args = 0;
+    info.uploaded = false;
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_kernel_by_name[kernel_name] = info;
+
+    return hipSuccess;
+}
