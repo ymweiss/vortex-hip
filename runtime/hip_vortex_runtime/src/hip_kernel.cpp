@@ -413,15 +413,28 @@ hipError_t hipLaunchKernelByName(
         // Found in registry
         kernel_buffer = it->second.kernel_buffer;
     } else {
-        // Try to load from default path
+        // Try to load from default path: <prefix>/<kernel_name>.vxbin
         std::string kernel_path = get_kernel_path_prefix();
         kernel_path += kernel_name;
         kernel_path += ".vxbin";
 
         int ret = vx_upload_kernel_file(device, kernel_path.c_str(), &kernel_buffer);
+
+        // Fallback: try <prefix>/kernel.vxbin (default name from compile_hip.sh)
         if (ret != 0) {
-            fprintf(stderr, "hipLaunchKernelByName: Kernel '%s' not registered and not found at '%s'\n",
-                    kernel_name, kernel_path.c_str());
+            std::string fallback_path = get_kernel_path_prefix();
+            fallback_path += "kernel.vxbin";
+            ret = vx_upload_kernel_file(device, fallback_path.c_str(), &kernel_buffer);
+            if (ret == 0) {
+                kernel_path = fallback_path;
+            }
+        }
+
+        if (ret != 0) {
+            fprintf(stderr, "hipLaunchKernelByName: Kernel '%s' not found.\n", kernel_name);
+            fprintf(stderr, "  Searched: %s%s.vxbin\n", get_kernel_path_prefix(), kernel_name);
+            fprintf(stderr, "  Searched: %skernel.vxbin\n", get_kernel_path_prefix());
+            fprintf(stderr, "  Set VORTEX_KERNEL_PATH to specify kernel location.\n");
             __hip_set_last_error(hipErrorLaunchFailure);
             return hipErrorLaunchFailure;
         }

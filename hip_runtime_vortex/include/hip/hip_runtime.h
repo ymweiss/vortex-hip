@@ -1,212 +1,97 @@
-// HIP Runtime API - Vortex Backend
-// Maps HIP API calls to Vortex runtime calls
-// This header is included instead of the standard HIP runtime
+#pragma once
 
-#ifndef HIP_RUNTIME_VORTEX_H
-#define HIP_RUNTIME_VORTEX_H
-
-#include <stdint.h>
 #include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
+// ------------------------------------------------------------------
+// 1. Clang CUDA Built-in Variables
+// Only include for device compilation (__CUDA__ defined by clang CUDA frontend)
+// This provides threadIdx, blockIdx, etc. as GPU operations
+// ------------------------------------------------------------------
+#ifdef __CUDA__
+#include "__clang_cuda_builtin_vars.h"
 #endif
 
-///////////////////////////////////////////////////////////////////////////////
-// Forward declarations of Vortex runtime functions
-///////////////////////////////////////////////////////////////////////////////
+// ------------------------------------------------------------------
+// 2. Attributes
+// Clang natively understands __global__, etc. when in HIP mode,
+// but these defines ensure compatibility if strict checking is off.
+// ------------------------------------------------------------------
+#ifndef __global__
+#define __global__ __attribute__((global))
+#endif
 
-// Device management
-typedef void* vx_device_h;
-int vx_dev_open(vx_device_h* hdevice);
-int vx_dev_close(vx_device_h hdevice);
+#ifndef __device__
+#define __device__ __attribute__((device))
+#endif
 
-// Memory management
-typedef void* vx_buffer_h;
-int vx_mem_alloc(vx_device_h hdevice, uint64_t size, int flags, vx_buffer_h* hbuffer);
-int vx_mem_free(vx_buffer_h hbuffer);
-int vx_mem_address(vx_buffer_h hbuffer, uint64_t* dev_addr);
+#ifndef __host__
+#define __host__ __attribute__((host))
+#endif
 
-// Memory transfer
-int vx_copy_to_dev(vx_buffer_h hbuffer, const void* host_ptr, uint64_t dst_offset, uint64_t size);
-int vx_copy_from_dev(void* host_ptr, vx_buffer_h hbuffer, uint64_t src_offset, uint64_t size);
+#ifndef __shared__
+#define __shared__ __attribute__((shared))
+#endif
 
-// Kernel execution
-int vx_upload_kernel_bytes(vx_device_h hdevice, const void* content, uint64_t size, vx_buffer_h* hbuffer);
-int vx_start(vx_device_h hdevice, vx_buffer_h hkernel, vx_buffer_h hargs);
-int vx_ready_wait(vx_device_h hdevice, uint64_t timeout);
-
-///////////////////////////////////////////////////////////////////////////////
-// HIP API Types
-///////////////////////////////////////////////////////////////////////////////
-
-typedef int hipError_t;
-typedef void* hipStream_t;
-
-// Error codes
-#define hipSuccess 0
-#define hipErrorMemoryAllocation 1
-#define hipErrorInvalidValue 2
-
-// Memory copy kinds
-typedef enum {
-    hipMemcpyHostToDevice,
-    hipMemcpyDeviceToHost,
-    hipMemcpyDeviceToDevice,
-    hipMemcpyHostToHost
-} hipMemcpyKind;
-
-// Dimension types
+// ------------------------------------------------------------------
+// 3. Vector Types
+// HIP uses uint3/dim3 for indexing. We need basic structs.
+// Note: __clang_cuda_builtin_vars.h defines uint3 already,
+// but we define dim3 here for kernel launch syntax.
+// ------------------------------------------------------------------
 struct dim3 {
-    uint32_t x, y, z;
-#ifdef __cplusplus
-    dim3(uint32_t _x = 1, uint32_t _y = 1, uint32_t _z = 1) : x(_x), y(_y), z(_z) {}
-#endif
+    unsigned int x, y, z;
+
+    // dim3 often has a constructor in real headers
+    __host__ __device__ dim3(unsigned int vx = 1, unsigned int vy = 1, unsigned int vz = 1)
+        : x(vx), y(vy), z(vz) {}
 };
 
-typedef struct dim3 dim3;
+// ------------------------------------------------------------------
+// 4. HIP Macros
+// Map the HIP-specific names to the standard CUDA-style variables.
+// ------------------------------------------------------------------
+#define hipThreadIdx_x threadIdx.x
+#define hipThreadIdx_y threadIdx.y
+#define hipThreadIdx_z threadIdx.z
 
-// Device properties
-typedef struct {
-    char name[256];
-    size_t totalGlobalMem;
-    size_t sharedMemPerBlock;
-    int regsPerBlock;
-    int warpSize;
-    int maxThreadsPerBlock;
-    int maxThreadsDim[3];
-    int maxGridSize[3];
-    int clockRate;
-    int multiProcessorCount;
-} hipDeviceProp_t;
+#define hipBlockIdx_x  blockIdx.x
+#define hipBlockIdx_y  blockIdx.y
+#define hipBlockIdx_z  blockIdx.z
 
-///////////////////////////////////////////////////////////////////////////////
-// Global device handle (simplified - single device)
-///////////////////////////////////////////////////////////////////////////////
+#define hipBlockDim_x  blockDim.x
+#define hipBlockDim_y  blockDim.y
+#define hipBlockDim_z  blockDim.z
 
-static vx_device_h g_vortex_device = NULL;
+#define hipGridDim_x   gridDim.x
+#define hipGridDim_y   gridDim.y
+#define hipGridDim_z   gridDim.z
 
-static inline vx_device_h vx_get_device() {
-    if (g_vortex_device == NULL) {
-        vx_dev_open(&g_vortex_device);
-    }
-    return g_vortex_device;
-}
+// ------------------------------------------------------------------
+// 5. Kernel Launch Support
+// These declarations are required for the <<<>>> kernel launch syntax
+// ------------------------------------------------------------------
+typedef struct cudaStream *cudaStream_t;
+typedef struct hipStream *hipStream_t;
 
-///////////////////////////////////////////////////////////////////////////////
-// HIP API Implementation - Memory Management
-///////////////////////////////////////////////////////////////////////////////
+extern "C" int cudaConfigureCall(dim3 gridSize, dim3 blockSize,
+                                 size_t sharedSize = 0,
+                                 cudaStream_t stream = 0);
 
-static inline hipError_t hipMalloc(void** ptr, size_t size) {
-    vx_buffer_h buffer;
-    int ret = vx_mem_alloc(vx_get_device(), size, 0, &buffer);
-    if (ret != 0) return hipErrorMemoryAllocation;
+extern "C" int hipConfigureCall(dim3 gridSize, dim3 blockSize,
+                                size_t sharedSize = 0,
+                                hipStream_t stream = 0);
 
-    uint64_t dev_addr;
-    ret = vx_mem_address(buffer, &dev_addr);
-    if (ret != 0) return hipErrorMemoryAllocation;
+// ------------------------------------------------------------------
+// 6. Runtime Function Stubs
+// For actual compilation (not Polygeist), these provide minimal stubs
+// ------------------------------------------------------------------
+typedef int hipError_t;
+typedef int cudaError_t;
+#define hipSuccess 0
+#define cudaSuccess 0
 
-    *ptr = (void*)dev_addr;
-    return hipSuccess;
-}
-
-static inline hipError_t hipFree(void* ptr) {
-    // Note: In real implementation, need to track buffer handles
-    // For now, simplified
-    return hipSuccess;
-}
-
-static inline hipError_t hipMemcpy(void* dst, const void* src, size_t size, hipMemcpyKind kind) {
-    // Note: Simplified implementation
-    // In real version, need to track buffer handles and call appropriate vx_copy_* function
-    return hipSuccess;
-}
-
-static inline hipError_t hipMemset(void* dst, int value, size_t size) {
-    // TODO: Implement using Vortex memory operations
-    return hipSuccess;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// HIP API Implementation - Device Management
-///////////////////////////////////////////////////////////////////////////////
-
-static inline hipError_t hipSetDevice(int deviceId) {
-    // Simplified: single device
-    return hipSuccess;
-}
-
-static inline hipError_t hipGetDevice(int* deviceId) {
-    *deviceId = 0;
-    return hipSuccess;
-}
-
-static inline hipError_t hipGetDeviceCount(int* count) {
-    *count = 1;
-    return hipSuccess;
-}
-
-static inline hipError_t hipGetDeviceProperties(hipDeviceProp_t* prop, int deviceId) {
-    // Fill with Vortex device properties
-    prop->totalGlobalMem = 1024 * 1024 * 1024; // 1GB
-    prop->sharedMemPerBlock = 16384; // 16KB
-    prop->warpSize = 32;
-    prop->maxThreadsPerBlock = 1024;
-    prop->maxThreadsDim[0] = 1024;
-    prop->maxThreadsDim[1] = 1024;
-    prop->maxThreadsDim[2] = 64;
-    prop->multiProcessorCount = 4;
-    return hipSuccess;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// HIP API Implementation - Synchronization
-///////////////////////////////////////////////////////////////////////////////
-
-static inline hipError_t hipDeviceSynchronize() {
-    return vx_ready_wait(vx_get_device(), -1);
-}
-
-static inline hipError_t hipStreamSynchronize(hipStream_t stream) {
-    return hipDeviceSynchronize();
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// HIP API Implementation - Error Handling
-///////////////////////////////////////////////////////////////////////////////
-
-static inline const char* hipGetErrorString(hipError_t error) {
-    switch (error) {
-        case hipSuccess: return "hipSuccess";
-        case hipErrorMemoryAllocation: return "hipErrorMemoryAllocation";
-        case hipErrorInvalidValue: return "hipErrorInvalidValue";
-        default: return "hipErrorUnknown";
-    }
-}
-
-static inline hipError_t hipGetLastError() {
-    return hipSuccess;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Kernel Launch (handled by Polygeist --cuda-lower)
-///////////////////////////////////////////////////////////////////////////////
-
-// The <<<>>> syntax is handled by Polygeist's --cuda-lower flag
-// Polygeist will generate gpu.launch_func operations
-// Our custom pass will convert those to vx_upload_kernel_bytes() + vx_start()
-
-///////////////////////////////////////////////////////////////////////////////
-// Device-side built-ins (recognized by Polygeist)
-///////////////////////////////////////////////////////////////////////////////
-
-// These are recognized by Polygeist and converted to GPU dialect operations:
-// - threadIdx, blockIdx, blockDim, gridDim
-// - __syncthreads()
-// - __shared__ memory
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif // HIP_RUNTIME_VORTEX_H
+// ------------------------------------------------------------------
+// 7. Device-side printf support
+// Needed for kernel code that uses printf
+// ------------------------------------------------------------------
+extern "C" __device__ int printf(const char*, ...);

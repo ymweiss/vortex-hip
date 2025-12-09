@@ -107,9 +107,9 @@ void {wrapper_name}({extended_params}) {{
 def transform_includes(source: str) -> str:
     """Transform HIP includes for dual host/device compilation.
 
-    Creates conditional include using __CUDACC__ (defined by clang CUDA frontend):
-    - Device compilation (__CUDACC__ defined): hip_runtime_vortex/hip_runtime.h
-    - Host compilation (__CUDACC__ not defined): hip/hip_runtime.h (Vortex runtime)
+    Creates conditional include using __CUDA__ macro:
+    - Device compilation (__CUDA__ defined): hip_runtime_vortex/hip_runtime.h
+    - Host compilation (__CUDA__ not defined): vortex_hip_runtime.h (Vortex HIP API)
     """
     # Pattern to match various forms of hip/hip_runtime.h include
     include_patterns = [
@@ -120,7 +120,7 @@ def transform_includes(source: str) -> str:
     ]
 
     replacement = '''#ifndef __CUDA__
-#include "hip/hip_runtime.h"  // Host compilation (Vortex runtime)
+#include "hip_vortex_runtime.h"  // Host compilation (Vortex HIP API)
 #else
 #include "hip_runtime_vortex/hip_runtime.h"  // Device compilation (Polygeist)
 #endif'''
@@ -203,13 +203,10 @@ def _convert_kernels_simple(source: str) -> str:
         signature = match.group(1)
         body = match.group(2)
 
-        # For host compilation, convert to extern declaration
-        # Remove __global__ and add extern for host
-        host_signature = re.sub(r'__global__\s*', '', signature)
-
-        return f'''#ifndef __CUDA__
-extern {host_signature};  // Extern declaration for host compilation
-#else
+        # For host compilation, the kernel function is replaced by a stub
+        # that calls vortexLaunchKernel(). The extern declaration is not needed
+        # because we generate the stub function.
+        return f'''#ifdef __CUDA__
 {signature}
 {{{body}}}
 #endif'''
@@ -228,6 +225,124 @@ extern {host_signature};  // Extern declaration for host compilation
     return pattern.sub(replace_kernel, source)
 
 
+def extract_kernel_definitions(source: str) -> tuple:
+    """Extract kernel function definitions from source.
+
+    Returns tuple of (kernel_defs_text, source_without_kernels)
+    """
+    # Pattern to match __global__ function with body
+    # Handles nested braces
+    kernel_pattern = re.compile(
+        r'(__global__\s+'
+        r'(?:__attribute__\s*\(\([^)]*\)\)\s*)?'
+        r'(?:__launch_bounds__\s*\([^)]*\)\s*)?'
+        r'void\s+\w+\s*\([^)]*\))\s*'
+        r'\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}',
+        re.MULTILINE | re.DOTALL
+    )
+
+    kernels = []
+    remaining = source
+
+    for match in kernel_pattern.finditer(source):
+        signature = match.group(1)
+        body = match.group(2)
+        kernels.append(f'{signature}\n{{{body}}}')
+        remaining = remaining.replace(match.group(0), '', 1)
+
+    return ('\n\n'.join(kernels), remaining)
+
+
+def extract_relevant_defines(source: str) -> str:
+    """Extract #define and #ifndef/#endif blocks that may be needed by kernels.
+
+    This includes TYPE definitions and other constants used in kernel code.
+    """
+    defines = []
+    lines = source.split('\n')
+    in_ifndef_block = False
+    ifndef_content = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Capture #ifndef TYPE / #define TYPE / #endif blocks
+        if stripped.startswith('#ifndef '):
+            in_ifndef_block = True
+            ifndef_content = [line]
+        elif in_ifndef_block:
+            ifndef_content.append(line)
+            if stripped.startswith('#endif'):
+                defines.append('\n'.join(ifndef_content))
+                in_ifndef_block = False
+                ifndef_content = []
+        # Capture standalone #define (not in ifndef block)
+        elif stripped.startswith('#define ') and not in_ifndef_block:
+            # Skip macro definitions that span multiple lines or are complex
+            if not stripped.endswith('\\'):
+                # Only include simple defines that might be used in kernels
+                if any(keyword in stripped for keyword in ['TYPE', 'SIZE', 'DIM', 'BLOCK', 'GRID']):
+                    defines.append(line)
+
+    return '\n'.join(defines)
+
+
+def reorganize_for_device_compilation(source: str) -> str:
+    """Reorganize source for device compilation with Polygeist.
+
+    Structure of output:
+    1. HIP header include (for device)
+    2. Relevant #define statements (TYPE, etc.)
+    3. Kernel function definitions (device code)
+    4. Synthetic launch wrappers (device code)
+    5. Everything else wrapped in #ifndef __CUDA__ (host-only)
+
+    This ensures Polygeist only sees: HIP header + defines + kernels + launch wrappers
+    """
+    # Extract kernel definitions
+    kernel_defs, remaining = extract_kernel_definitions(source)
+
+    if not kernel_defs:
+        return source
+
+    # Extract relevant defines that kernels may need
+    defines = extract_relevant_defines(source)
+
+    # Build the reorganized source
+    result = '''// Reorganized for Polygeist device compilation
+// Auto-generated by inject_kernel_launchers.py
+
+// Device header (provides __global__, threadIdx, blockIdx, etc.)
+#ifdef __CUDA__
+#include "hip_runtime_vortex/hip_runtime.h"
+#include <stdint.h>
+#include <stddef.h>
+
+// Preprocessor definitions needed by kernels
+''' + defines + '''
+
+#endif  // __CUDA__
+
+// =============================================================================
+// Kernel Definitions (device code)
+// =============================================================================
+#ifdef __CUDA__
+
+''' + kernel_defs + '''
+
+#endif  // __CUDA__
+
+// =============================================================================
+// Host Code (excluded from device compilation)
+// =============================================================================
+#ifndef __CUDA__
+''' + remaining + '''
+#endif  // !__CUDA__
+'''
+
+    return result
+
+
 def inject_launchers(source: str, for_device: bool = True) -> str:
     """Inject synthetic launch wrappers into the source code.
 
@@ -242,14 +357,11 @@ def inject_launchers(source: str, for_device: bool = True) -> str:
         return source
 
     if for_device:
-        # Transform includes for Polygeist compatibility
-        result = transform_includes(source)
+        # Reorganize source: HIP header + kernels at top, rest gated as host-only
+        result = reorganize_for_device_compilation(source)
     else:
-        # For host compilation, keep original includes
+        # For host compilation, keep original structure
         result = source
-
-    # Convert kernel definitions to conditional declarations
-    result = _convert_kernels_simple(result)
 
     if for_device:
         # Generate all launchers for device compilation

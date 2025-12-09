@@ -321,6 +321,13 @@ hipError_t hipLaunchKernelByName(
         ); \
     } while(0)
 
+// C++ template wrapper for hipMalloc to allow any pointer type
+// The C API uses void** but C++ requires explicit casts
+template<typename T>
+inline hipError_t hipMalloc(T** ptr, size_t size) {
+    return hipMalloc(reinterpret_cast<void**>(ptr), size);
+}
+
 #endif // __cplusplus
 
 #endif // HIP_VORTEX_RUNTIME_H
