@@ -8,11 +8,12 @@
 
 ### Prerequisites
 
-- Linux (tested on Ubuntu 22.04)
-- GCC 11+ or Clang 14+
+- Linux (tested on Ubuntu 22.04, 24.04)
+- GCC 11 or Clang 14+
 - CMake 3.20+
 - Ninja (recommended) or Make
 - Python 3.8+
+- storage space: 200 GB
 
 ### Clone and Initialize
 
@@ -35,6 +36,10 @@ export VORTEX_HIP_HOME=$PWD
 ```
 
 ### Step 1: Build Vortex (Runtime + Toolchain)
+
+Polygeist converts HIP/CUDA source to MLIR. It requires LLVM, MLIR, and Clang to be built first.
+
+See [Polygeist/README.md](Polygeist/README.md) for full build options. Quick build:
 
 ```bash
 cd $VORTEX_HIP_HOME/vortex
@@ -630,6 +635,28 @@ Polygeist (LLVM 18)              llvm-vortex (LLVM 18)
   HIP → GPU MLIR                   LLVM IR → RISC-V
         ↓                                ↑
         └────── LLVM IR (.ll) ───────────┘
+```
+
+### Device Compilation Pipeline
+
+```bash
+# 1. HIP → GPU dialect MLIR
+./Polygeist/build/bin/cgeist kernel.hip --emit-cuda -S -o kernel.mlir
+
+# 2. GPU dialect → Vortex LLVM dialect
+./Polygeist/build/bin/polygeist-opt kernel.mlir \
+    --convert-gpu-to-vortex \
+    --gpu-to-llvm \
+    --generate-vortex-main \
+    -o kernel_vortex.mlir
+
+# 3. MLIR LLVM Dialect → LLVM IR (textual)
+# mlir-translate is built with Polygeist's LLVM
+./Polygeist/llvm-project/build/bin/mlir-translate \
+    --mlir-to-llvmir kernel_vortex.mlir -o kernel.ll
+
+# 4. LLVM IR → Vortex RISC-V binary
+llvm-vortex/build/bin/clang -target riscv32 kernel.ll -o kernel.vxbin
 ```
 
 ---
