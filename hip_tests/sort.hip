@@ -3,11 +3,7 @@
 // Implementation uses bitonic sorting network for parallel GPU sorting
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
-#include <algorithm>
+#include <stdlib.h>
 
 #ifndef TYPE
 #define TYPE int
@@ -90,7 +86,7 @@ int main(int argc, char *argv[]) {
   uint32_t power = 1;
   while (power < size) power <<= 1;
   if (power != size) {
-    std::cout << "Warning: size must be power of 2 for bitonic sort, rounding up to " << power << std::endl;
+    printf("Warning: size must be power of 2 for bitonic sort, rounding up to %u\n", power);
     size = power;
   }
 
@@ -99,12 +95,12 @@ int main(int argc, char *argv[]) {
   uint32_t num_points = size;
   uint32_t buf_size = num_points * sizeof(TYPE);
 
-  std::cout << "number of points: " << num_points << std::endl;
+  printf("number of points: %u\n", num_points);
   std::cout << "data type: " << (sizeof(TYPE) == 4 ? "int" : "unknown") << std::endl;
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
 
   // Allocate host buffers
-  std::cout << "allocate host buffers" << std::endl;
+  printf("allocate host buffers\n");
   std::vector<TYPE> h_src(num_points);
   std::vector<TYPE> h_dst(num_points);
   std::vector<TYPE> h_ref(num_points);
@@ -121,16 +117,16 @@ int main(int argc, char *argv[]) {
   bitonic_sort_host(h_ref.data(), num_points);
 
   // Allocate device memory
-  std::cout << "allocate device memory" << std::endl;
+  printf("allocate device memory\n");
   TYPE *d_data;
   HIP_CHECK(hipMalloc(&d_data, buf_size));
 
   // Upload source buffer
-  std::cout << "upload source buffer" << std::endl;
+  printf("upload source buffer\n");
   HIP_CHECK(hipMemcpy(d_data, h_src.data(), buf_size, hipMemcpyHostToDevice));
 
   // Launch bitonic sort kernels
-  std::cout << "launch bitonic sort kernels" << std::endl;
+  printf("launch bitonic sort kernels\n");
   int threads_per_block = 256;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
@@ -144,15 +140,15 @@ int main(int argc, char *argv[]) {
   }
 
   // Wait for completion
-  std::cout << "wait for completion" << std::endl;
+  printf("wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Download destination buffer
-  std::cout << "download destination buffer" << std::endl;
+  printf("download destination buffer\n");
   HIP_CHECK(hipMemcpy(h_dst.data(), d_data, buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   for (uint32_t i = 0; i < num_points; ++i) {
     TYPE ref = h_ref[i];
@@ -175,19 +171,19 @@ int main(int argc, char *argv[]) {
   }
 
   if (!is_sorted && errors == 0) {
-    std::cout << "Warning: array is not sorted but matches reference" << std::endl;
+    printf("Warning: array is not sorted but matches reference\n");
   }
 
   // Cleanup
-  std::cout << "cleanup" << std::endl;
+  printf("cleanup\n");
   HIP_CHECK(hipFree(d_data));
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

@@ -430,18 +430,70 @@ hipError_t __hipRegisterFunctionWithMetadata(void** function_address,
                                               const hipKernelArgumentMetadata* arg_metadata);
 
 //=============================================================================
-// C++ Helper Macros
+// Vortex-Specific Kernel Launch (used by generated stubs)
+//=============================================================================
+
+/**
+ * @brief Vortex kernel argument metadata structure (simplified version)
+ * Used by generated stub code to describe kernel arguments
+ */
+typedef struct VortexKernelArgMeta {
+    uint32_t offset;      // Offset in argument buffer
+    uint32_t size;        // Size in bytes
+    uint32_t is_pointer;  // Non-zero if this is a pointer type
+} VortexKernelArgMeta;
+
+/**
+ * @brief Launch a Vortex kernel with pre-packed arguments
+ *
+ * This function is used by generated stub code to launch kernels
+ * with arguments already packed into a contiguous buffer.
+ *
+ * @param kernel_name Name of the kernel (used for lookup)
+ * @param gridDim Grid dimensions
+ * @param blockDim Block dimensions
+ * @param args Pointer to packed argument buffer
+ * @param args_size Size of argument buffer in bytes
+ * @param metadata Array of argument metadata
+ * @param num_args Number of arguments
+ * @return hipSuccess on success
+ */
+hipError_t vortexLaunchKernel(const char* kernel_name,
+                               dim3 gridDim,
+                               dim3 blockDim,
+                               const void* args,
+                               size_t args_size,
+                               const VortexKernelArgMeta* metadata,
+                               size_t num_args);
+
+/**
+ * @brief Register a Vortex kernel by name
+ *
+ * This function registers a kernel binary with a name for later lookup
+ * by vortexLaunchKernel. The kernel binary is uploaded lazily on first launch.
+ *
+ * @param kernel_name Name of the kernel
+ * @param kernel_binary Pointer to the kernel binary
+ * @param kernel_size Size of the kernel binary in bytes
+ * @return hipSuccess on success
+ */
+hipError_t vortexRegisterKernel(const char* kernel_name,
+                                 const void* kernel_binary,
+                                 size_t kernel_size);
+
+//=============================================================================
+// C++ Helper Templates
 //=============================================================================
 
 #ifdef __cplusplus
 }  // extern "C"
 
-// Kernel launch syntax: kernel<<<grid, block, sharedMem, stream>>>(args...)
-#define hipLaunchKernelGGL(F, G, B, S, ST, ...) \
-    do { \
-        hipConfigureCall(G, B, S, ST); \
-        F(__VA_ARGS__); \
-    } while(0)
+// C++ template wrapper for hipMalloc to allow any pointer type
+// The C API uses void** but C++ requires explicit casts
+template<typename T>
+inline hipError_t hipMalloc(T** ptr, size_t size) {
+    return hipMalloc(reinterpret_cast<void**>(ptr), size);
+}
 
 #endif  // __cplusplus
 

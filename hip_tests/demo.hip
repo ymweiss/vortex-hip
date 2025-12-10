@@ -2,10 +2,8 @@
 // Converted from Vortex regression test: vortex/tests/regression/demo
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
+#include <stdlib.h>
+#include <stdio.h>
 
 #ifndef TYPE
 #define TYPE int
@@ -106,14 +104,14 @@ int main(int argc, char *argv[]) {
   uint32_t num_points = count * num_blocks;
   uint32_t buf_size = num_points * sizeof(TYPE);
 
-  std::cout << "number of points: " << num_points << std::endl;
-  std::cout << "count per block: " << count << std::endl;
-  std::cout << "number of blocks: " << num_blocks << std::endl;
+  printf("number of points: %u\n", num_points);
+  printf("count per block: %u\n", count);
+  printf("number of blocks: %u\n", num_blocks);
   std::cout << "data type: " << Comparator<TYPE>::type_str() << std::endl;
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
 
   // Allocate host buffers
-  std::cout << "allocate host buffers" << std::endl;
+  printf("allocate host buffers\n");
   std::vector<TYPE> h_src0(num_points);
   std::vector<TYPE> h_src1(num_points);
   std::vector<TYPE> h_dst(num_points);
@@ -124,35 +122,35 @@ int main(int argc, char *argv[]) {
   }
 
   // Allocate device memory
-  std::cout << "allocate device memory" << std::endl;
+  printf("allocate device memory\n");
   TYPE *d_src0, *d_src1, *d_dst;
   HIP_CHECK(hipMalloc(&d_src0, buf_size));
   HIP_CHECK(hipMalloc(&d_src1, buf_size));
   HIP_CHECK(hipMalloc(&d_dst, buf_size));
 
   // Upload source buffers
-  std::cout << "upload source buffer0" << std::endl;
+  printf("upload source buffer0\n");
   HIP_CHECK(hipMemcpy(d_src0, h_src0.data(), buf_size, hipMemcpyHostToDevice));
 
-  std::cout << "upload source buffer1" << std::endl;
+  printf("upload source buffer1\n");
   HIP_CHECK(hipMemcpy(d_src1, h_src1.data(), buf_size, hipMemcpyHostToDevice));
 
   // Launch kernel
   // Each block processes 'count' elements sequentially
-  std::cout << "launch kernel" << std::endl;
+  printf("launch kernel\n");
   hipLaunchKernelGGL(demo_kernel, dim3(num_blocks), dim3(1), 0, 0,
                      d_src0, d_src1, d_dst, count);
 
   // Wait for completion
-  std::cout << "wait for completion" << std::endl;
+  printf("wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Download destination buffer
-  std::cout << "download destination buffer" << std::endl;
+  printf("download destination buffer\n");
   HIP_CHECK(hipMemcpy(h_dst.data(), d_dst, buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   for (uint32_t i = 0; i < num_points; ++i) {
     auto ref = h_src0[i] + h_src1[i];
@@ -163,17 +161,17 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  std::cout << "cleanup" << std::endl;
+  printf("cleanup\n");
   HIP_CHECK(hipFree(d_src0));
   HIP_CHECK(hipFree(d_src1));
   HIP_CHECK(hipFree(d_dst));
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

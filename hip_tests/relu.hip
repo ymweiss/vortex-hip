@@ -3,10 +3,8 @@
 // Applies ReLU activation function: f(x) = max(0, x)
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
+#include <stdlib.h>
+#include <stdio.h>
 
 #ifndef TYPE
 #define TYPE float
@@ -53,7 +51,7 @@ int main(int argc, char *argv[]) {
   uint32_t num_points = size;
   uint32_t buf_size = num_points * sizeof(TYPE);
 
-  std::cout << "number of points: " << num_points << std::endl;
+  printf("number of points: %u\n", num_points);
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
 
   // Allocate host buffers
@@ -87,7 +85,7 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipMemcpy(h_dst.data(), d_dst, buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   for (uint32_t i = 0; i < num_points; ++i) {
     TYPE ref = (h_src[i] > 0) ? h_src[i] : 0;
@@ -108,10 +106,10 @@ int main(int argc, char *argv[]) {
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

@@ -7,11 +7,8 @@
 // the original TCU test structure.
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
-#include <cstring>
+#include <stdlib.h>
+#include <stdio.h>
 
 // Default matrix element types
 #ifndef ITYPE
@@ -85,9 +82,9 @@ __global__ void sgemm_tcu_kernel(ITYPE* A, ITYPE* B, OTYPE* C,
 ///////////////////////////////////////////////////////////////////////////////
 
 static void show_usage() {
-  std::cout << "Vortex SGEMM TCU Test - HIP version" << std::endl;
-  std::cout << "Usage: [-m M] [-n N] [-k K] [-h: help]" << std::endl;
-  std::cout << "  M, N, K should be multiples of tile dimensions (16x16x16)" << std::endl;
+  printf("Vortex SGEMM TCU Test - HIP version\n");
+  printf("Usage: [-m M] [-n N] [-k K] [-h: help]\n");
+  printf("  M, N, K should be multiples of tile dimensions (16x16x16)\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -151,7 +148,7 @@ int main(int argc, char *argv[]) {
   std::vector<OTYPE> h_C(size_C);
 
   // Initialize matrices with random values
-  std::cout << "Initialize matrices" << std::endl;
+  printf("Initialize matrices\n");
   for (uint32_t i = 0; i < size_A; ++i) {
     h_A[i] = static_cast<ITYPE>(rand()) / RAND_MAX;
   }
@@ -160,7 +157,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Allocate device memory
-  std::cout << "Allocate device memory" << std::endl;
+  printf("Allocate device memory\n");
   ITYPE *d_A, *d_B;
   OTYPE *d_C;
   HIP_CHECK(hipMalloc(&d_A, buf_size_A));
@@ -168,10 +165,10 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipMalloc(&d_C, buf_size_C));
 
   // Upload matrices to device
-  std::cout << "Upload matrix A buffer" << std::endl;
+  printf("Upload matrix A buffer\n");
   HIP_CHECK(hipMemcpy(d_A, h_A.data(), buf_size_A, hipMemcpyHostToDevice));
 
-  std::cout << "Upload matrix B buffer" << std::endl;
+  printf("Upload matrix B buffer\n");
   HIP_CHECK(hipMemcpy(d_B, h_B.data(), buf_size_B, hipMemcpyHostToDevice));
 
   // Configure kernel launch parameters
@@ -187,15 +184,15 @@ int main(int argc, char *argv[]) {
                      d_A, d_B, d_C, M, N, K);
 
   // Wait for completion
-  std::cout << "Wait for completion" << std::endl;
+  printf("Wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Download result
-  std::cout << "Download destination buffer" << std::endl;
+  printf("Download destination buffer\n");
   HIP_CHECK(hipMemcpy(h_C.data(), d_C, buf_size_C, hipMemcpyDeviceToHost));
 
   // Verify result with CPU computation
-  std::cout << "Verify result" << std::endl;
+  printf("Verify result\n");
   int errors = 0;
   for (uint32_t row = 0; row < M; ++row) {
     for (uint32_t col = 0; col < N; ++col) {
@@ -221,17 +218,17 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  std::cout << "Cleanup" << std::endl;
+  printf("Cleanup\n");
   HIP_CHECK(hipFree(d_A));
   HIP_CHECK(hipFree(d_B));
   HIP_CHECK(hipFree(d_C));
 
   if (errors != 0) {
     std::cout << "Found " << errors << " / " << size_C << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

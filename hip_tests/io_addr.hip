@@ -2,10 +2,7 @@
 // Converted from Vortex regression test: vortex/tests/regression/io_addr
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cstring>
+#include <stdlib.h>
 
 #define NUM_ADDRS 16
 
@@ -78,13 +75,13 @@ int main(int argc, char *argv[]) {
   uint32_t src_buf_size = num_points * sizeof(uint64_t);
   uint32_t dst_buf_size = num_points * sizeof(int32_t);
 
-  std::cout << "number of points: " << num_points << std::endl;
+  printf("number of points: %u\n", num_points);
   std::cout << "addr buffer size: " << addr_buf_size << " bytes" << std::endl;
   std::cout << "src buffer size: " << src_buf_size << " bytes" << std::endl;
   std::cout << "dst buffer size: " << dst_buf_size << " bytes" << std::endl;
 
   // Allocate host buffers
-  std::cout << "allocate host buffers" << std::endl;
+  printf("allocate host buffers\n");
   std::vector<uint64_t> h_src;
   std::vector<uint32_t> h_addr(NUM_ADDRS);
   std::vector<int32_t> h_dst(num_points);
@@ -95,7 +92,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Allocate device memory
-  std::cout << "allocate device memory" << std::endl;
+  printf("allocate device memory\n");
   uint32_t *d_addr;
   uint64_t *d_src;
   uint32_t *d_dst;
@@ -105,7 +102,7 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipMalloc(&d_dst, dst_buf_size));
 
   // Upload address buffer
-  std::cout << "upload address buffer" << std::endl;
+  printf("upload address buffer\n");
   HIP_CHECK(hipMemcpy(d_addr, h_addr.data(), addr_buf_size, hipMemcpyHostToDevice));
 
   // Get the device address of d_addr to generate source addresses
@@ -115,11 +112,11 @@ int main(int argc, char *argv[]) {
   gen_src_addrs(h_src, d_addr_base, num_points);
 
   // Upload source buffer (contains addresses)
-  std::cout << "upload source buffer" << std::endl;
+  printf("upload source buffer\n");
   HIP_CHECK(hipMemcpy(d_src, h_src.data(), src_buf_size, hipMemcpyHostToDevice));
 
   // Launch kernel
-  std::cout << "launch kernel" << std::endl;
+  printf("launch kernel\n");
   int threads_per_block = 64;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
@@ -127,15 +124,15 @@ int main(int argc, char *argv[]) {
                      d_src, d_dst, num_points);
 
   // Wait for completion
-  std::cout << "wait for completion" << std::endl;
+  printf("wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Download destination buffer
-  std::cout << "download destination buffer" << std::endl;
+  printf("download destination buffer\n");
   HIP_CHECK(hipMemcpy(h_dst.data(), d_dst, dst_buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   int errors = 0;
   std::vector<int32_t> h_ref;
   gen_ref_data(h_ref, num_points);
@@ -153,17 +150,17 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  std::cout << "cleanup" << std::endl;
+  printf("cleanup\n");
   HIP_CHECK(hipFree(d_addr));
   HIP_CHECK(hipFree(d_src));
   HIP_CHECK(hipFree(d_dst));
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

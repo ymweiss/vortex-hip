@@ -2,10 +2,8 @@
 // Converted from Vortex regression test: vortex/tests/regression/madmax
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
+#include <stdlib.h>
+#include <stdio.h>
 
 #define FLOAT_ULP 6
 
@@ -143,16 +141,16 @@ int main(int argc, char *argv[]) {
   uint32_t num_points = size * size;
   uint32_t buf_size = num_points * sizeof(float);
 
-  std::cout << "number of points: " << size << std::endl;
+  printf("number of points: %u\n", size);
   std::cout << "buffer size: " << buf_size << " bytes" << std::endl;
 
   // Allocate device memory
-  std::cout << "allocate device memory" << std::endl;
+  printf("allocate device memory\n");
   float *d_dst;
   HIP_CHECK(hipMalloc(&d_dst, buf_size));
 
   // Launch kernel
-  std::cout << "launch kernel" << std::endl;
+  printf("launch kernel\n");
   dim3 threads_per_block(16, 16);
   dim3 num_blocks((size + threads_per_block.x - 1) / threads_per_block.x,
                   (size + threads_per_block.y - 1) / threads_per_block.y);
@@ -161,16 +159,16 @@ int main(int argc, char *argv[]) {
                      d_dst, size);
 
   // Wait for completion
-  std::cout << "wait for completion" << std::endl;
+  printf("wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Download destination buffer
-  std::cout << "download destination buffer" << std::endl;
+  printf("download destination buffer\n");
   std::vector<float> h_dst(num_points);
   HIP_CHECK(hipMemcpy(h_dst.data(), d_dst, buf_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   std::vector<float> h_ref(num_points);
   compute_reference(h_ref.data(), size);
 
@@ -193,15 +191,15 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  std::cout << "cleanup" << std::endl;
+  printf("cleanup\n");
   HIP_CHECK(hipFree(d_dst));
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }

@@ -11,6 +11,7 @@
 //       -S -o simple_malloc_test.mlir
 
 #include <hip/hip_runtime.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 __global__ void vector_add(float* a, float* b, float* c, int n) {

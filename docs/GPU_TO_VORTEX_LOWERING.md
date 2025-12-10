@@ -62,11 +62,32 @@ gpu.func @kernel(...) {
 }
 ```
 
-### Lowering Strategy
+### Lowering Strategy (Implemented)
 
-1. **`memref.global` (address space 3):** Emit as shared memory allocation in `.shared` section
-2. **`memref.get_global`:** Lower to pointer to shared memory base
-3. **`memref.load/store` (address space 3):** Generate load/store with shared memory addressing
+1. **`memref.global` (address space 3):** Annotate with offset/size attributes for layout tracking. The `SharedMemoryGlobalOpLowering` pattern assigns sequential offsets to each shared memory global.
+
+2. **`memref.get_global` (address space 3):** Generate Vortex local memory access:
+   ```c
+   // Computes: csr_read(VX_CSR_LOCAL_MEM_BASE) + local_group_id * total_size + offset
+   ptr = (int8_t*)csr_read(0xFC3) + vx_get_local_group_id() * totalSharedSize + offset
+   ```
+   Returns a proper memref descriptor with this computed base address.
+
+3. **`memref.load/store` (address space 3):** Standard memref operations work with the computed descriptor.
+
+### Key Vortex Functions (ABI)
+
+| Function | Description |
+|----------|-------------|
+| `vx_get_local_group_id()` | Returns the current warp group ID (TLS variable) |
+| `vx_num_warps_abi()` | Returns number of warps per core (linkable wrapper) |
+| `vx_barrier_abi(id, nwarps)` | Synchronizes warps at barrier (linkable wrapper) |
+
+### CSR Registers Used
+
+| CSR | Value | Description |
+|-----|-------|-------------|
+| `VX_CSR_LOCAL_MEM_BASE` | 0xFC3 | Base address of per-group local memory |
 
 ---
 
@@ -161,4 +182,4 @@ llvm.func @main() -> i32 {
 
 ---
 
-**Last Updated:** 2025-12-05
+**Last Updated:** 2025-12-09 (Added shared memory lowering implementation details)

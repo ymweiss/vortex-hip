@@ -129,8 +129,9 @@ After completing all build steps, use the automated compilation script:
 
 ```bash
 # Set environment (do this each session)
+export VORTEX_HIP_HOME=/path/to/vortex_hip  # Replace with your actual path
 cd $VORTEX_HIP_HOME
-source vortex/build/ci/toolchain_env.sh
+source vortex/build/ci/toolchain_env.sh     # Sets up PATH for RISC-V tools
 
 # Compile a HIP program
 ./scripts/compile_hip.sh hip_tests/vecadd.hip
@@ -138,7 +139,7 @@ source vortex/build/ci/toolchain_env.sh
 # Output files:
 #   vecadd        - Host executable
 #   kernel.vxbin  - Device kernel binary
-#   kernel_stubs.h - Generated headers (if --keep-temps)
+#   kernel_stubs.h - Generated kernel launch headers
 ```
 
 ### Script Options
@@ -149,8 +150,9 @@ source vortex/build/ci/toolchain_env.sh
 Options:
   -o <name>       Output executable name (default: input basename)
   -k <name>       Kernel binary name (default: kernel.vxbin)
-  --device-only   Only compile device code (kernel.vxbin)
-  --host-only     Only compile host code
+  --mlir <file>   Use existing GPU dialect MLIR file (skip cgeist step)
+  --device-only   Only compile device code (kernel.vxbin + stubs)
+  --host-only     Only compile host code (requires existing stubs)
   --keep-temps    Keep intermediate files in build_<name>/
   --verbose       Show all commands
 ```
@@ -166,6 +168,23 @@ export LD_LIBRARY_PATH=$VORTEX_HIP_HOME/runtime/build:$LD_LIBRARY_PATH
 # Run (kernel.vxbin must be in current directory)
 ./vecadd
 ```
+
+---
+
+## How It Works
+
+The `hipLaunchKernelGGL` macro automatically loads the kernel binary at runtime:
+
+1. **Compile time**: `hipLaunchKernelGGL(my_kernel, grid, block, ...)` is transformed to `hipLaunchKernelByName("my_kernel", ...)`
+
+2. **Runtime**: On first kernel launch:
+   - Looks for `./my_kernel.vxbin`
+   - Falls back to `./kernel.vxbin`
+   - Loads kernel binary to device memory
+   - Caches for subsequent launches
+   - Executes with provided arguments
+
+No manual kernel registration required - it's automatic.
 
 ---
 
@@ -464,12 +483,14 @@ We use `llc` to compile to RISC-V object code with the correct target triple,
 then link with clang.
 
 ```bash
-# Set environment variables (from vortex/build after running toolchain_env.sh)
-export VORTEX_HOME=/path/to/vortex_hip/vortex
-export LLVM_VORTEX=/path/to/vortex_hip/llvm-vortex/build
-export LIBC_VORTEX=$HOME/tools/libc32
-export LIBCRT_VORTEX=$HOME/tools/libcrt32
-export RISCV_TOOLCHAIN=$HOME/tools/riscv32-gnu-toolchain
+# Set environment variables for manual compilation
+# These paths are set by vortex/build/ci/toolchain_install.sh during Vortex build
+export VORTEX_HIP_HOME=/path/to/vortex_hip          # Root of this repository
+export VORTEX_HOME=$VORTEX_HIP_HOME/vortex          # Vortex submodule
+export LLVM_VORTEX=$VORTEX_HIP_HOME/llvm-vortex/build  # llvm-vortex build directory
+export LIBC_VORTEX=$HOME/tools/libc32               # RISC-V libc (from toolchain_install.sh)
+export LIBCRT_VORTEX=$HOME/tools/libcrt32           # RISC-V compiler-rt (from toolchain_install.sh)
+export RISCV_TOOLCHAIN=$HOME/tools/riscv32-gnu-toolchain  # RISC-V GNU toolchain
 
 # Step 1: Compile LLVM IR to RISC-V object with llc
 # This sets the correct target triple (mlir-translate outputs x86_64)
@@ -512,53 +533,28 @@ python3 $VORTEX_HOME/kernel/scripts/vxbin.py kernel.elf kernel.vxbin
 
 ### Step 4: Host Compilation
 
-The host compilation uses the generated `kernel_stubs.h` from step 3c:
+The host compilation uses the transformed source and generated `kernel_stubs.h`:
 
 ```bash
-# Compile host code (includes kernel_stubs.h)
-g++ -c vecadd_host.cpp -o vecadd_host.o \
-    -I runtime/include \
+# Compile host code from transformed source
+# -DVORTEX_HIP_HOST gates out device code, includes host HIP runtime
+g++ -x c++ -c vecadd_transformed.cu -o vecadd_host.o \
+    -I $VORTEX_HIP_HOME/runtime/hip_vortex_runtime/include \
+    -I $VORTEX_HIP_HOME/runtime/include \
     -I .  \
-    -std=c++17
+    -std=c++17 \
+    -DVORTEX_HIP_HOST
 
-# Link with Vortex runtime
+# Link with HIP runtime and Vortex runtime
 g++ vecadd_host.o -o vecadd \
-    -L vortex/build/runtime \
-    -lvortex \
-    -Wl,-rpath,$PWD/vortex/build/runtime
+    -L $VORTEX_HIP_HOME/runtime/build \
+    -L $VORTEX_HIP_HOME/vortex/build/runtime \
+    -lhip_vortex -lvortex \
+    -Wl,-rpath,$VORTEX_HIP_HOME/runtime/build \
+    -Wl,-rpath,$VORTEX_HIP_HOME/vortex/build/runtime
 ```
 
-**Host code example (`vecadd_host.cpp`):**
-```cpp
-#include <vortex_hip_runtime.h>
-#include "kernel_stubs.h"  // Generated from metadata
-
-int main() {
-    // Allocate memory
-    float *d_a, *d_b, *d_c;
-    hipMalloc(&d_a, N * sizeof(float));
-    hipMalloc(&d_b, N * sizeof(float));
-    hipMalloc(&d_c, N * sizeof(float));
-
-    // Copy data to device
-    hipMemcpy(d_a, h_a, N * sizeof(float), hipMemcpyHostToDevice);
-    hipMemcpy(d_b, h_b, N * sizeof(float), hipMemcpyHostToDevice);
-
-    // Register kernel binary
-    vortexRegisterKernel("launch_vecadd", kernel_binary, kernel_size);
-
-    // Launch using generated stub (type-safe!)
-    launch_vecadd(dim3(numBlocks), dim3(blockSize),
-                  0, 0, 0,  // grid info args (filled by runtime)
-                  d_a, d_b, d_c);
-
-    // Synchronize and copy results
-    hipDeviceSynchronize();
-    hipMemcpy(h_c, d_c, N * sizeof(float), hipMemcpyDeviceToHost);
-
-    return 0;
-}
-```
+The transformed source (`vecadd_transformed.cu`) contains both host and device code, with `#ifndef __CUDA__` / `#ifdef __CUDA__` guards. The `-DVORTEX_HIP_HOST` define ensures only host code is compiled by g++.
 
 ---
 
@@ -737,17 +733,19 @@ vortex_hip/
 **GPU Dialect Operations Lowered:**
 - `gpu.block_id`, `gpu.thread_id` - thread indexing → Vortex TLS
 - `gpu.block_dim`, `gpu.grid_dim` - dimension queries → Vortex TLS
-- `gpu.barrier` - synchronization → `vx_barrier()`
+- `gpu.barrier` - synchronization → `vx_barrier_abi()`
 - `gpu.launch_func` - kernel launches → metadata extraction
 - `gpu.module`, `gpu.func` - kernel extraction → `func.func`
+- `memref.global` (address space 3) - shared memory globals → offset annotations
+- `memref.get_global` (address space 3) - shared memory access → `VX_CSR_LOCAL_MEM_BASE` + offset
 
-**In Development:**
-- ⏳ Custom memref lowering to Vortex intrinsics (current lowering generates incompatible descriptors)
+**Memory Model:**
+- ✅ Global memory (address space 0) - standard memref lowering via `--finalize-memref-to-llvm`
+- ✅ Shared memory (address space 3) - custom CSR-based lowering via `VX_CSR_LOCAL_MEM_BASE` (0xFC3)
 
 **Remaining:**
-- Custom memref → Vortex memory intrinsics lowering
-- End-to-end integration testing
-- Vortex SimX simulator testing
+- End-to-end integration testing on Vortex SimX simulator
+- Performance validation with complex kernels
 
 ### ⏳ Phase 3: Full Integration (Planned)
 
@@ -1025,5 +1023,5 @@ The `inject_kernel_launchers.py` script uses `__CUDA__` macro (defined by Polyge
 
 ---
 
-**Last Updated:** 2025-12-08
-**Current Phase:** Phase 2 (Kernel Compilation - 90% Complete)
+**Last Updated:** 2025-12-09
+**Current Phase:** Phase 2 (Kernel Compilation - 95% Complete)

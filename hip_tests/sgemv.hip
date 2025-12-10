@@ -2,10 +2,8 @@
 // Converted from Vortex regression test: vortex/tests/regression/sgemv
 
 #include <hip/hip_runtime.h>
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <cmath>
+#include <stdlib.h>
+#include <stdio.h>
 
 #ifndef TYPE
 #define TYPE float
@@ -127,7 +125,7 @@ int main(int argc, char *argv[]) {
   std::cout << "Vector y size: " << y_size << " bytes" << std::endl;
 
   // Allocate host buffers
-  std::cout << "allocate host buffers" << std::endl;
+  printf("allocate host buffers\n");
   std::vector<TYPE> h_A(M * N);
   std::vector<TYPE> h_x(N);
   std::vector<TYPE> h_y(M);
@@ -141,21 +139,21 @@ int main(int argc, char *argv[]) {
   }
 
   // Allocate device memory
-  std::cout << "allocate device memory" << std::endl;
+  printf("allocate device memory\n");
   TYPE *d_A, *d_x, *d_y;
   HIP_CHECK(hipMalloc(&d_A, A_size));
   HIP_CHECK(hipMalloc(&d_x, x_size));
   HIP_CHECK(hipMalloc(&d_y, y_size));
 
   // Upload input buffers
-  std::cout << "upload matrix A" << std::endl;
+  printf("upload matrix A\n");
   HIP_CHECK(hipMemcpy(d_A, h_A.data(), A_size, hipMemcpyHostToDevice));
 
-  std::cout << "upload vector x" << std::endl;
+  printf("upload vector x\n");
   HIP_CHECK(hipMemcpy(d_x, h_x.data(), x_size, hipMemcpyHostToDevice));
 
   // Launch kernel
-  std::cout << "launch kernel" << std::endl;
+  printf("launch kernel\n");
   int threads_per_block = 64;
   int num_blocks = (M + threads_per_block - 1) / threads_per_block;
 
@@ -163,15 +161,15 @@ int main(int argc, char *argv[]) {
                      d_A, d_x, d_y, M, N);
 
   // Wait for completion
-  std::cout << "wait for completion" << std::endl;
+  printf("wait for completion\n");
   HIP_CHECK(hipDeviceSynchronize());
 
   // Download destination buffer
-  std::cout << "download destination buffer" << std::endl;
+  printf("download destination buffer\n");
   HIP_CHECK(hipMemcpy(h_y.data(), d_y, y_size, hipMemcpyDeviceToHost));
 
   // Verify result
-  std::cout << "verify result" << std::endl;
+  printf("verify result\n");
   std::vector<TYPE> h_ref(M);
   sgemv_cpu(h_ref.data(), h_A.data(), h_x.data(), M, N);
 
@@ -185,17 +183,17 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  std::cout << "cleanup" << std::endl;
+  printf("cleanup\n");
   HIP_CHECK(hipFree(d_A));
   HIP_CHECK(hipFree(d_x));
   HIP_CHECK(hipFree(d_y));
 
   if (errors != 0) {
     std::cout << "Found " << errors << " errors!" << std::endl;
-    std::cout << "FAILED!" << std::endl;
+    printf("FAILED!\n");
     return 1;
   }
 
-  std::cout << "PASSED!" << std::endl;
+  printf("PASSED!\n");
   return 0;
 }
