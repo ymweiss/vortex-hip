@@ -335,6 +335,7 @@ compile_device() {
     log_info "  2b: GPU Dialect → Vortex MLIR (+ metadata generation)"
     pushd "$TEMP_DIR" > /dev/null
     run_cmd "$POLYGEIST_OPT" gpu.mlir \
+        --reorder-gpu-kernel-args \
         --convert-gpu-to-vortex \
         -o vortex.mlir
     popd > /dev/null
