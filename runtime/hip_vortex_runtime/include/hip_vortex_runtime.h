@@ -191,6 +191,30 @@ extern "C" {
 #endif
 
 //=============================================================================
+// Kernel Argument Metadata (for vortexLaunchKernel)
+//=============================================================================
+
+/**
+ * Metadata describing a single kernel argument for Vortex marshaling.
+ * Used by vortexLaunchKernel to properly convert host pointers to device addresses.
+ */
+typedef struct VortexKernelArgMeta {
+    uint32_t offset;      // Offset in the args buffer (after header)
+    uint32_t size;        // Size in bytes (4 for i32/ptr, 8 for i64)
+    uint32_t is_pointer;  // 1 if this is a device pointer, 0 for scalar
+} VortexKernelArgMeta;
+
+/**
+ * Vortex kernel argument header structure.
+ * This is the standard format expected by Vortex kernels.
+ */
+typedef struct VortexKernelArgs {
+    uint32_t grid_dim[3];   // Grid dimensions (12 bytes)
+    uint32_t block_dim[3];  // Block dimensions (12 bytes)
+    // User arguments follow (variable size)
+} VortexKernelArgs;
+
+//=============================================================================
 // Kernel Launch Support
 //=============================================================================
 
@@ -269,6 +293,31 @@ hipError_t hipLaunchKernelByName(
 
 #ifdef __cplusplus
 }  // extern "C"
+
+/**
+ * Launch a Vortex kernel with explicit argument metadata.
+ * This is the preferred API for launching kernels compiled by Polygeist.
+ *
+ * The metadata describes each kernel argument, allowing proper conversion of
+ * host buffer handles to device addresses.
+ *
+ * @param kernel_name   Name of the kernel (used to find .vxbin file)
+ * @param gridDim       Grid dimensions
+ * @param blockDim      Block dimensions
+ * @param args          Pointer to packed arguments (host format)
+ * @param args_size     Size of args buffer
+ * @param metadata      Array describing each argument
+ * @param num_args      Number of arguments in metadata array
+ */
+hipError_t vortexLaunchKernel(
+    const char* kernel_name,
+    dim3 gridDim,
+    dim3 blockDim,
+    const void* args,
+    size_t args_size,
+    const VortexKernelArgMeta* metadata,
+    size_t num_args
+);
 
 //=============================================================================
 // hipLaunchKernelGGL - C++ Template-based Kernel Launch

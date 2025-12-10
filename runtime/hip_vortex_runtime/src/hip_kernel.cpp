@@ -299,18 +299,7 @@ hipError_t hipRegisterKernel(const char* kernel_name, const char* kernel_file) {
 // Kernel Launch
 //=============================================================================
 
-/**
- * Vortex kernel argument structure
- * This is the standard format expected by Vortex kernels
- */
-struct VortexKernelArgs {
-    // Grid and block dimensions
-    uint32_t grid_dim[3];
-    uint32_t block_dim[3];
-
-    // User arguments follow (variable size)
-    // The actual arguments are appended after this header
-};
+// VortexKernelArgs and VortexKernelArgMeta are now defined in hip_vortex_runtime.h
 
 hipError_t hipModuleLaunchKernel(
     hipFunction_t f,
@@ -418,13 +407,17 @@ hipError_t hipLaunchKernelByName(
         kernel_path += kernel_name;
         kernel_path += ".vxbin";
 
+        fprintf(stderr, "[HIP] Trying to load kernel: %s\n", kernel_path.c_str());
         int ret = vx_upload_kernel_file(device, kernel_path.c_str(), &kernel_buffer);
+        fprintf(stderr, "[HIP] vx_upload_kernel_file returned %d\n", ret);
 
         // Fallback: try <prefix>/kernel.vxbin (default name from compile_hip.sh)
         if (ret != 0) {
             std::string fallback_path = get_kernel_path_prefix();
             fallback_path += "kernel.vxbin";
+            fprintf(stderr, "[HIP] Fallback: trying %s\n", fallback_path.c_str());
             ret = vx_upload_kernel_file(device, fallback_path.c_str(), &kernel_buffer);
+            fprintf(stderr, "[HIP] Fallback vx_upload_kernel_file returned %d\n", ret);
             if (ret == 0) {
                 kernel_path = fallback_path;
             }
@@ -489,6 +482,196 @@ hipError_t hipLaunchKernelByName(
     // Note: args_buffer will be leaked in this simple implementation
     // A proper implementation would track pending launches and free buffers
     // after synchronization
+
+    return hipSuccess;
+}
+
+//=============================================================================
+// vortexLaunchKernel - Launch with metadata for proper pointer conversion
+//=============================================================================
+
+// Structure for tracking device memory allocations
+struct DeviceAllocation {
+    vx_buffer_h buffer;
+    uint64_t device_addr;
+    size_t size;
+};
+
+// Global allocation tracking (simple approach - more robust would use thread-local)
+static std::unordered_map<void*, DeviceAllocation> g_device_allocations;
+
+void __hip_track_allocation(void* host_handle, vx_buffer_h buffer) {
+    uint64_t dev_addr = 0;
+    vx_mem_address(buffer, &dev_addr);
+    g_device_allocations[host_handle] = {buffer, dev_addr, 0};
+}
+
+void __hip_untrack_allocation(void* host_handle) {
+    g_device_allocations.erase(host_handle);
+}
+
+hipError_t vortexLaunchKernel(
+    const char* kernel_name,
+    dim3 gridDim,
+    dim3 blockDim,
+    const void* args,
+    size_t args_size,
+    const VortexKernelArgMeta* metadata,
+    size_t num_args
+) {
+    (void)args_size; // We calculate actual size from metadata
+
+    if (kernel_name == nullptr || args == nullptr) {
+        __hip_set_last_error(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    vx_device_h device = __hip_get_vortex_device();
+    if (device == nullptr) {
+        __hip_set_last_error(hipErrorNotInitialized);
+        return hipErrorNotInitialized;
+    }
+
+    // Load kernel (same logic as hipLaunchKernelByName)
+    auto it = g_kernel_registry.find(kernel_name);
+    vx_buffer_h kernel_buffer;
+
+    if (it != g_kernel_registry.end()) {
+        kernel_buffer = it->second.kernel_buffer;
+    } else {
+        // Try to load kernel binary
+        std::string kernel_path = get_kernel_path_prefix();
+        kernel_path += kernel_name;
+        kernel_path += ".vxbin";
+
+        fprintf(stderr, "[HIP] vortexLaunchKernel: Loading kernel: %s\n", kernel_path.c_str());
+        int ret = vx_upload_kernel_file(device, kernel_path.c_str(), &kernel_buffer);
+
+        // Fallback: try kernel.vxbin
+        if (ret != 0) {
+            std::string fallback_path = get_kernel_path_prefix();
+            fallback_path += "kernel.vxbin";
+            fprintf(stderr, "[HIP] Fallback: trying %s\n", fallback_path.c_str());
+            ret = vx_upload_kernel_file(device, fallback_path.c_str(), &kernel_buffer);
+            if (ret == 0) {
+                kernel_path = fallback_path;
+            }
+        }
+
+        if (ret != 0) {
+            fprintf(stderr, "vortexLaunchKernel: Kernel '%s' not found.\n", kernel_name);
+            __hip_set_last_error(hipErrorLaunchFailure);
+            return hipErrorLaunchFailure;
+        }
+
+        // Cache for future use
+        KernelInfo info;
+        info.kernel_buffer = kernel_buffer;
+        info.name = kernel_name;
+        info.filename = kernel_path;
+        g_kernel_registry[kernel_name] = info;
+    }
+
+    // Build combined argument structure:
+    // Header: grid_dim[3] (12 bytes) + block_dim[3] (12 bytes) = 24 bytes
+    // User args: packed with 4-byte device pointers (regardless of host pointer size)
+
+    // Calculate device user args size
+    // Device uses 4-byte pointers (RV32), scalars keep their size
+    size_t device_args_size = 0;
+    for (size_t i = 0; i < num_args; i++) {
+        const VortexKernelArgMeta& meta = metadata[i];
+        // On device, pointers are always 4 bytes
+        device_args_size += meta.is_pointer ? 4 : meta.size;
+    }
+
+    size_t header_size = sizeof(VortexKernelArgs);  // 24 bytes
+    size_t total_size = header_size + device_args_size;
+
+    uint8_t* combined_args = new uint8_t[total_size];
+    memset(combined_args, 0, total_size);
+
+    // Fill header
+    VortexKernelArgs* header = (VortexKernelArgs*)combined_args;
+    header->grid_dim[0] = gridDim.x;
+    header->grid_dim[1] = gridDim.y;
+    header->grid_dim[2] = gridDim.z;
+    header->block_dim[0] = blockDim.x;
+    header->block_dim[1] = blockDim.y;
+    header->block_dim[2] = blockDim.z;
+
+    // Copy and convert user arguments
+    // Note: meta.offset is for the HOST struct (8-byte pointers on 64-bit)
+    // We compute device_offset separately for the DEVICE buffer (4-byte pointers)
+    const uint8_t* src_args = (const uint8_t*)args;
+    uint8_t* dst_args = combined_args + header_size;
+
+    size_t device_offset = 0;  // Offset in device buffer
+    for (size_t i = 0; i < num_args; i++) {
+        const VortexKernelArgMeta& meta = metadata[i];
+
+        if (meta.is_pointer) {
+            // This is a device pointer - convert buffer handle to device address
+            // Read from host struct at meta.offset (8 bytes for void*)
+            void* host_handle;
+            memcpy(&host_handle, src_args + meta.offset, sizeof(void*));
+
+            uint32_t device_addr = 0;
+            if (host_handle != nullptr) {
+                // Look up device address from buffer handle
+                vx_buffer_h buffer = (vx_buffer_h)host_handle;
+                uint64_t addr64 = 0;
+                vx_mem_address(buffer, &addr64);
+                device_addr = (uint32_t)addr64;  // Truncate to 32-bit for RV32
+            }
+
+            // Store 4-byte device address at device_offset
+            memcpy(dst_args + device_offset, &device_addr, sizeof(uint32_t));
+
+            fprintf(stderr, "[HIP] Arg %zu: ptr handle=%p -> dev_addr=0x%08x (host_off=%u, dev_off=%zu)\n",
+                    i, host_handle, device_addr, meta.offset, device_offset);
+
+            device_offset += 4;  // Device pointers are always 4 bytes
+        } else {
+            // Scalar argument - copy directly
+            // Read from host at meta.offset, write to device at device_offset
+            memcpy(dst_args + device_offset, src_args + meta.offset, meta.size);
+
+            fprintf(stderr, "[HIP] Arg %zu: scalar (host_off=%u, dev_off=%zu, size=%u)\n",
+                    i, meta.offset, device_offset, meta.size);
+
+            device_offset += meta.size;
+        }
+    }
+
+    // Debug: print final args buffer
+    fprintf(stderr, "[HIP] Args buffer (%zu bytes):\n", total_size);
+    for (size_t i = 0; i < total_size && i < 48; i += 4) {
+        uint32_t val;
+        memcpy(&val, combined_args + i, sizeof(uint32_t));
+        fprintf(stderr, "  [%2zu] 0x%08x\n", i, val);
+    }
+
+    // Upload arguments to device
+    vx_buffer_h args_buffer;
+    int ret = vx_upload_bytes(device, combined_args, total_size, &args_buffer);
+    delete[] combined_args;
+
+    if (ret != 0) {
+        __hip_set_last_error(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    // Start kernel execution
+    fprintf(stderr, "[HIP] Starting kernel execution\n");
+    ret = vx_start(device, kernel_buffer, args_buffer);
+    if (ret != 0) {
+        vx_mem_free(args_buffer);
+        __hip_set_last_error(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    // Note: args_buffer is leaked - proper implementation would track and free after sync
 
     return hipSuccess;
 }
