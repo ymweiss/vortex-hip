@@ -43,7 +43,7 @@ import sys
 def extract_kernels(source: str) -> list:
     """
     Extract kernel function declarations from HIP/CUDA source.
-    Returns list of tuples: (kernel_name, params_str, param_names)
+    Returns list of tuples: (kernel_name, params_str, param_names, param_is_pointer)
     """
     # Pattern to match __global__ function declarations
     # Handles: __global__ void name(params) and __global__ __attribute__(...) void name(params)
@@ -62,12 +62,16 @@ def extract_kernels(source: str) -> list:
         kernel_name = match.group(1)
         params_str = match.group(2).strip()
 
-        # Parse parameter names from the params string
+        # Parse parameter names and types from the params string
         param_names = []
+        param_is_pointer = []
         if params_str:
             # Split by comma, extract the variable name (last word before any default value)
             for param in params_str.split(','):
                 param = param.strip()
+                # Check if it's a pointer (has * in the declaration)
+                is_ptr = '*' in param
+                param_is_pointer.append(is_ptr)
                 # Remove array brackets like "float data[]" -> "float data"
                 param = re.sub(r'\[[^\]]*\]', '', param)
                 # Remove * and & from the parameter
@@ -80,12 +84,12 @@ def extract_kernels(source: str) -> list:
                     if name and name not in ('const', 'volatile', 'restrict'):
                         param_names.append(name)
 
-        kernels.append((kernel_name, params_str, param_names))
+        kernels.append((kernel_name, params_str, param_names, param_is_pointer))
 
     return kernels
 
 
-def generate_launcher(kernel_name: str, params_str: str, param_names: list) -> str:
+def generate_launcher(kernel_name: str, params_str: str, param_names: list, param_is_pointer: list = None) -> str:
     """Generate a synthetic launch wrapper for a kernel."""
     args = ', '.join(param_names)
 
@@ -320,7 +324,9 @@ def transform_kernel_launch_calls(source: str, kernels: list) -> str:
     """
     result = source
 
-    for kernel_name, params_str, param_names in kernels:
+    for kernel_info in kernels:
+        kernel_name, params_str, param_names = kernel_info[:3]
+        param_is_pointer = kernel_info[3] if len(kernel_info) > 3 else []
         # Build launcher function name
         launcher_name = f"launch_{kernel_name}"
 
@@ -454,8 +460,10 @@ def inject_launchers(source: str, for_device: bool = True) -> str:
     if for_device:
         # Generate all launchers for device compilation
         launchers = []
-        for kernel_name, params_str, param_names in kernels:
-            launcher = generate_launcher(kernel_name, params_str, param_names)
+        for kernel_info in kernels:
+            kernel_name, params_str, param_names = kernel_info[:3]
+            param_is_pointer = kernel_info[3] if len(kernel_info) > 3 else []
+            launcher = generate_launcher(kernel_name, params_str, param_names, param_is_pointer)
             launchers.append(launcher)
 
         # Add launchers at the end of the file (only for device path)

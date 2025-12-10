@@ -139,10 +139,9 @@ int main(int argc, char *argv[]) {
   int threads_per_block = 16;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
-  // Use generated Vortex stub (kernel_stubs.h) with args in kernel order:
-  // launch_vecadd_kernel(grid, block, num_points, src0, src1, dst)
-  HIP_CHECK(launch_vecadd_kernel(dim3(num_blocks), dim3(threads_per_block),
-                                 num_points, d_src0, d_src1, d_dst));
+  // Standard HIP kernel launch (transformed to use Vortex stubs by pipeline)
+  hipLaunchKernelGGL(vecadd_kernel, dim3(num_blocks), dim3(threads_per_block),
+                     0, 0, d_src0, d_src1, d_dst, num_points);
 
   // Wait for completion
   printf("wait for completion\n");

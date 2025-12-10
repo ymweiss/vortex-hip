@@ -153,8 +153,15 @@ def generate_kernel_metadata_array(kernel_name: str, args: List[Dict]) -> str:
 
 
 def generate_launcher_function(kernel_name: str, args: List[Dict],
-                                original_kernel_name: Optional[str] = None) -> str:
-    """Generate a type-safe launcher function."""
+                                original_arg_order: Optional[List[int]] = None) -> str:
+    """Generate a type-safe launcher function.
+
+    If original_arg_order is provided, the launcher accepts arguments in original
+    order (matching hipLaunchKernelGGL) and reorders them when packing into the
+    args struct for the device.
+
+    original_arg_order[device_idx] = original_idx
+    """
     base_name = extract_base_kernel_name(kernel_name)
     struct_name = f"{base_name}_args_t"
 
@@ -164,32 +171,64 @@ def generate_launcher_function(kernel_name: str, args: List[Dict],
     else:
         launcher_name = f"launch_{base_name}"
 
-    # Build function parameters
-    params = []
-    for arg in args:
-        cpp_type = type_to_cpp(arg["type"], arg.get("is_pointer", False))
-        # Use const pointer for input arrays
-        if arg.get("is_pointer"):
-            params.append(f"const void* {arg['name']}")
-        else:
-            params.append(f"{cpp_type} {arg['name']}")
+    # Determine parameter order for the launcher function
+    if original_arg_order and len(original_arg_order) == len(args):
+        # Reorder args to original order for the function parameters
+        # Create inverse mapping: orig_to_device[orig_idx] = device_idx
+        orig_to_device = [0] * len(args)
+        for device_idx, orig_idx in enumerate(original_arg_order):
+            orig_to_device[orig_idx] = device_idx
+
+        # Build params in original order
+        params = []
+        param_names_in_order = []
+        for orig_idx in range(len(args)):
+            device_idx = orig_to_device[orig_idx]
+            arg = args[device_idx]
+            cpp_type = type_to_cpp(arg["type"], arg.get("is_pointer", False))
+            param_name = f"orig_arg{orig_idx}"
+            param_names_in_order.append(param_name)
+            if arg.get("is_pointer"):
+                params.append(f"const void* {param_name}")
+            else:
+                params.append(f"{cpp_type} {param_name}")
+
+        # Build argument packing (map from original params to device struct)
+        pack_lines = []
+        for device_idx, arg in enumerate(args):
+            orig_idx = original_arg_order[device_idx]
+            param_name = f"orig_arg{orig_idx}"
+            if arg.get("is_pointer"):
+                pack_lines.append(f"  args.{arg['name']} = (void*){param_name};")
+            else:
+                pack_lines.append(f"  args.{arg['name']} = {param_name};")
+    else:
+        # No reordering - use device order directly
+        params = []
+        for arg in args:
+            cpp_type = type_to_cpp(arg["type"], arg.get("is_pointer", False))
+            if arg.get("is_pointer"):
+                params.append(f"const void* {arg['name']}")
+            else:
+                params.append(f"{cpp_type} {arg['name']}")
+
+        pack_lines = []
+        for arg in args:
+            if arg.get("is_pointer"):
+                pack_lines.append(f"  args.{arg['name']} = (void*){arg['name']};")
+            else:
+                pack_lines.append(f"  args.{arg['name']} = {arg['name']};")
 
     params_str = ", ".join(params)
-
-    # Build argument packing
-    # Store host buffer handles directly - vortexLaunchKernel will convert to device addresses
-    pack_lines = []
-    for arg in args:
-        if arg.get("is_pointer"):
-            pack_lines.append(f"  args.{arg['name']} = (void*){arg['name']};")
-        else:
-            pack_lines.append(f"  args.{arg['name']} = {arg['name']};")
-
     pack_str = "\n".join(pack_lines)
 
     lines = [
         f"// Type-safe launcher for {base_name}",
         f"// Call this from host code instead of hipLaunchKernelGGL",
+    ]
+    if original_arg_order:
+        lines.append(f"// Arguments are in ORIGINAL order (matching kernel signature)")
+    lines.extend([
         f"inline hipError_t {launcher_name}(",
         f"    dim3 gridDim, dim3 blockDim,",
         f"    {params_str}) {{",
@@ -204,7 +243,7 @@ def generate_launcher_function(kernel_name: str, args: List[Dict],
         f"    {base_name}_metadata, {base_name.upper()}_NUM_ARGS);",
         f"}}",
         f"",
-    ]
+    ])
 
     return "\n".join(lines)
 
@@ -247,15 +286,20 @@ def generate_header(kernels: Dict[str, Dict], output_name: str) -> str:
         if not args:
             continue
 
+        # Get original argument order mapping if available
+        original_arg_order = meta.get("original_arg_order", None)
+
         lines.append(f"// ============================================")
         lines.append(f"// Kernel: {base_name}")
         lines.append(f"// Original: {kernel_name}")
+        if original_arg_order:
+            lines.append(f"// Arg order mapping (device->original): {original_arg_order}")
         lines.append(f"// ============================================")
         lines.append("")
 
         lines.append(generate_args_struct(kernel_name, args))
         lines.append(generate_kernel_metadata_array(kernel_name, args))
-        lines.append(generate_launcher_function(kernel_name, args))
+        lines.append(generate_launcher_function(kernel_name, args, original_arg_order))
 
     lines.extend([
         f"#endif // {guard}",
