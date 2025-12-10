@@ -1,21 +1,33 @@
+// hip_runtime.h - Device-side HIP header for Vortex/Polygeist compilation
+//
+// This header is used during device code compilation with Polygeist.
+// It provides the GPU built-in variables (threadIdx, blockIdx, etc.)
+// and kernel attribute macros (__global__, __device__, etc.)
+//
+// Usage (in transformed source for Polygeist):
+//   #ifdef __CUDA__
+//   #include "hip_runtime.h"  // Device compilation
+//   #endif
+//
+// Compile with: cgeist --cuda-lower -I runtime/device ...
+
 #pragma once
 
 #include <stddef.h>
-#include <stdint.h>
 
 // ------------------------------------------------------------------
 // 1. Clang CUDA Built-in Variables
 // Only include for device compilation (__CUDA__ defined by clang CUDA frontend)
-// This provides threadIdx, blockIdx, etc. as GPU operations
+// This provides threadIdx, blockIdx, blockDim, gridDim as GPU operations
 // ------------------------------------------------------------------
 #ifdef __CUDA__
 #include "__clang_cuda_builtin_vars.h"
 #endif
 
 // ------------------------------------------------------------------
-// 2. Attributes
-// Clang natively understands __global__, etc. when in HIP mode,
-// but these defines ensure compatibility if strict checking is off.
+// 2. Kernel and Function Attributes
+// Clang natively understands these in CUDA mode, but these defines
+// ensure compatibility if strict checking is off.
 // ------------------------------------------------------------------
 #ifndef __global__
 #define __global__ __attribute__((global))
@@ -33,23 +45,25 @@
 #define __shared__ __attribute__((shared))
 #endif
 
+#ifndef __constant__
+#define __constant__ __attribute__((constant))
+#endif
+
 // ------------------------------------------------------------------
 // 3. Vector Types
-// HIP uses uint3/dim3 for indexing. We need basic structs.
-// Note: __clang_cuda_builtin_vars.h defines uint3 already,
-// but we define dim3 here for kernel launch syntax.
+// HIP uses uint3/dim3 for indexing. __clang_cuda_builtin_vars.h
+// defines uint3, but we define dim3 here for kernel launch syntax.
 // ------------------------------------------------------------------
 struct dim3 {
     unsigned int x, y, z;
 
-    // dim3 often has a constructor in real headers
     __host__ __device__ dim3(unsigned int vx = 1, unsigned int vy = 1, unsigned int vz = 1)
         : x(vx), y(vy), z(vz) {}
 };
 
 // ------------------------------------------------------------------
-// 4. HIP Macros
-// Map the HIP-specific names to the standard CUDA-style variables.
+// 4. HIP Index Macros
+// Map HIP-specific names to standard CUDA-style variables.
 // ------------------------------------------------------------------
 #define hipThreadIdx_x threadIdx.x
 #define hipThreadIdx_y threadIdx.y
@@ -69,7 +83,7 @@ struct dim3 {
 
 // ------------------------------------------------------------------
 // 5. Kernel Launch Support
-// These declarations are required for the <<<>>> kernel launch syntax
+// Required for <<<>>> kernel launch syntax used by Polygeist
 // ------------------------------------------------------------------
 typedef struct cudaStream *cudaStream_t;
 typedef struct hipStream *hipStream_t;
@@ -83,8 +97,7 @@ extern "C" int hipConfigureCall(dim3 gridSize, dim3 blockSize,
                                 hipStream_t stream = 0);
 
 // ------------------------------------------------------------------
-// 6. Runtime Function Stubs
-// For actual compilation (not Polygeist), these provide minimal stubs
+// 6. Error Types (minimal for device compilation)
 // ------------------------------------------------------------------
 typedef int hipError_t;
 typedef int cudaError_t;
@@ -93,6 +106,10 @@ typedef int cudaError_t;
 
 // ------------------------------------------------------------------
 // 7. Device-side printf support
-// Needed for kernel code that uses printf
 // ------------------------------------------------------------------
 extern "C" __device__ int printf(const char*, ...);
+
+// ------------------------------------------------------------------
+// 8. Block Synchronization
+// ------------------------------------------------------------------
+extern "C" __device__ void __syncthreads(void);

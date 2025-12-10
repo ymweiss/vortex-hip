@@ -1,8 +1,14 @@
-// hip_vortex_runtime.h - Minimal HIP runtime for Vortex
-// Copyright © 2024
+// hip_vortex_runtime.h - HIP Runtime API for Vortex
+// Copyright 2024-2025 Vortex HIP Project
 //
 // This library provides HIP API functions that map to Vortex API calls.
-// Host programs link against this library to execute kernels on Vortex.
+// Host programs link against libhip_vortex.so to execute kernels on Vortex.
+//
+// Usage:
+//   #include <hip/hip_runtime.h>    // or
+//   #include "hip_vortex_runtime.h"
+//
+// Link with: -lhip_vortex -lvortex
 
 #ifndef HIP_VORTEX_RUNTIME_H
 #define HIP_VORTEX_RUNTIME_H
@@ -33,7 +39,7 @@ typedef enum hipError_t {
 } hipError_t;
 
 //=============================================================================
-// Memory Management
+// Memory Management Types
 //=============================================================================
 
 typedef enum hipMemcpyKind {
@@ -44,35 +50,13 @@ typedef enum hipMemcpyKind {
     hipMemcpyDefault = 4
 } hipMemcpyKind;
 
-/**
- * Allocate device memory
- * Maps to: vx_mem_alloc()
- */
-hipError_t hipMalloc(void** devPtr, size_t size);
-
-/**
- * Free device memory
- * Maps to: vx_mem_free()
- */
-hipError_t hipFree(void* devPtr);
-
-/**
- * Copy memory between host and device
- * Maps to: vx_copy_to_dev() / vx_copy_from_dev()
- */
-hipError_t hipMemcpy(void* dst, const void* src, size_t sizeBytes, hipMemcpyKind kind);
-
-/**
- * Set device memory to a value
- */
-hipError_t hipMemset(void* devPtr, int value, size_t sizeBytes);
-
 //=============================================================================
 // Device Management
 //=============================================================================
 
 /**
  * Initialize HIP runtime
+ * Maps to: vx_dev_open()
  */
 hipError_t hipInit(unsigned int flags);
 
@@ -91,13 +75,13 @@ hipError_t hipGetDevice(int* deviceId);
  * Wait for device to finish all work
  * Maps to: vx_ready_wait()
  */
-hipError_t hipDeviceSynchronize();
+hipError_t hipDeviceSynchronize(void);
 
 /**
  * Reset device
  * Maps to: vx_dev_close()
  */
-hipError_t hipDeviceReset();
+hipError_t hipDeviceReset(void);
 
 /**
  * Get number of devices
@@ -126,6 +110,33 @@ typedef struct hipDeviceProp_t {
  * Get device properties
  */
 hipError_t hipGetDeviceProperties(hipDeviceProp_t* prop, int deviceId);
+
+//=============================================================================
+// Memory Management
+//=============================================================================
+
+/**
+ * Allocate device memory
+ * Maps to: vx_mem_alloc()
+ */
+hipError_t hipMalloc(void** devPtr, size_t size);
+
+/**
+ * Free device memory
+ * Maps to: vx_mem_free()
+ */
+hipError_t hipFree(void* devPtr);
+
+/**
+ * Copy memory between host and device
+ * Maps to: vx_copy_to_dev() / vx_copy_from_dev()
+ */
+hipError_t hipMemcpy(void* dst, const void* src, size_t sizeBytes, hipMemcpyKind kind);
+
+/**
+ * Set device memory to a value
+ */
+hipError_t hipMemset(void* devPtr, int value, size_t sizeBytes);
 
 //=============================================================================
 // Error Handling
@@ -191,7 +202,7 @@ extern "C" {
 #endif
 
 //=============================================================================
-// Kernel Argument Metadata (for vortexLaunchKernel)
+// Vortex Kernel Argument Metadata
 //=============================================================================
 
 /**
@@ -199,8 +210,8 @@ extern "C" {
  * Used by vortexLaunchKernel to properly convert host pointers to device addresses.
  */
 typedef struct VortexKernelArgMeta {
-    uint32_t offset;      // Offset in the args buffer (after header)
-    uint32_t size;        // Size in bytes (4 for i32/ptr, 8 for i64)
+    uint32_t offset;      // Offset in the args buffer (host layout)
+    uint32_t size;        // Size in bytes (4 for i32/ptr, 8 for i64/void*)
     uint32_t is_pointer;  // 1 if this is a device pointer, 0 for scalar
 } VortexKernelArgMeta;
 
@@ -211,7 +222,7 @@ typedef struct VortexKernelArgMeta {
 typedef struct VortexKernelArgs {
     uint32_t grid_dim[3];   // Grid dimensions (12 bytes)
     uint32_t block_dim[3];  // Block dimensions (12 bytes)
-    // User arguments follow (variable size)
+    // User arguments follow at offset 24
 } VortexKernelArgs;
 
 //=============================================================================
@@ -237,24 +248,11 @@ hipError_t hipModuleGetFunction(hipFunction_t* function, hipModule_t module, con
 
 /**
  * Register a kernel binary for later launch
- * This associates a kernel name with a loaded binary
  */
 hipError_t hipRegisterKernel(const char* kernel_name, const char* kernel_file);
 
 /**
  * Launch kernel using module/function API
- *
- * @param f         Function handle from hipModuleGetFunction
- * @param gridDimX  Grid dimension X
- * @param gridDimY  Grid dimension Y
- * @param gridDimZ  Grid dimension Z
- * @param blockDimX Block dimension X
- * @param blockDimY Block dimension Y
- * @param blockDimZ Block dimension Z
- * @param sharedMemBytes Shared memory size
- * @param stream    Stream (NULL for default)
- * @param kernelParams Array of pointers to kernel arguments
- * @param extra     Reserved, must be NULL
  */
 hipError_t hipModuleLaunchKernel(
     hipFunction_t f,
@@ -268,18 +266,6 @@ hipError_t hipModuleLaunchKernel(
 
 /**
  * Internal kernel launch function (used by hipLaunchKernelGGL macro)
- *
- * @param kernel_name   Name of the kernel to launch
- * @param gridDimX      Grid dimension X
- * @param gridDimY      Grid dimension Y
- * @param gridDimZ      Grid dimension Z
- * @param blockDimX     Block dimension X
- * @param blockDimY     Block dimension Y
- * @param blockDimZ     Block dimension Z
- * @param sharedMemBytes Shared memory size
- * @param stream        Stream (NULL for default)
- * @param args          Pointer to argument data blob
- * @param args_size     Size of argument data
  */
 hipError_t hipLaunchKernelByName(
     const char* kernel_name,
@@ -299,7 +285,7 @@ hipError_t hipLaunchKernelByName(
  * This is the preferred API for launching kernels compiled by Polygeist.
  *
  * The metadata describes each kernel argument, allowing proper conversion of
- * host buffer handles to device addresses.
+ * host buffer handles (64-bit void*) to device addresses (32-bit).
  *
  * @param kernel_name   Name of the kernel (used to find .vxbin file)
  * @param gridDim       Grid dimensions
@@ -371,7 +357,6 @@ hipError_t vortexLaunchKernel(
     } while(0)
 
 // C++ template wrapper for hipMalloc to allow any pointer type
-// The C API uses void** but C++ requires explicit casts
 template<typename T>
 inline hipError_t hipMalloc(T** ptr, size_t size) {
     return hipMalloc(reinterpret_cast<void**>(ptr), size);

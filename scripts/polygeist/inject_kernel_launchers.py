@@ -5,7 +5,7 @@ inject_kernel_launchers.py - Prepare HIP kernel source for Polygeist compilation
 This script processes HIP source files to prepare them for device compilation
 through Polygeist. It performs two transformations:
 
-1. Replaces standard HIP includes with hip_runtime_vortex/hip_runtime.h which
+1. Replaces standard HIP includes with runtime/device/hip_runtime.h which
    provides __clang_cuda_builtin_vars.h for proper GPU variable support
 
 2. Adds synthetic launch wrappers for each __global__ kernel function.
@@ -33,7 +33,7 @@ After processing, compile the output with Polygeist using:
 
 Where:
     $POLYGEIST = path to Polygeist source directory
-    $VORTEX_HIP = path to vortex_hip repository root (contains hip_runtime_vortex/)
+    $VORTEX_HIP = path to vortex_hip repository root (contains runtime/device/)
 """
 
 import re
@@ -108,7 +108,7 @@ def transform_includes(source: str) -> str:
     """Transform HIP includes for dual host/device compilation.
 
     Creates conditional include using __CUDA__ macro:
-    - Device compilation (__CUDA__ defined): hip_runtime_vortex/hip_runtime.h
+    - Device compilation (__CUDA__ defined): runtime/device/hip_runtime.h
     - Host compilation (__CUDA__ not defined): vortex_hip_runtime.h (Vortex HIP API)
     """
     # Pattern to match various forms of hip/hip_runtime.h include
@@ -401,7 +401,7 @@ def reorganize_for_device_compilation(source: str, kernels: list = None) -> str:
 
 // Device header (provides __global__, threadIdx, blockIdx, etc.)
 #ifdef __CUDA__
-#include "hip_runtime_vortex/hip_runtime.h"
+#include "hip_runtime.h"
 #include <stdint.h>
 #include <stddef.h>
 

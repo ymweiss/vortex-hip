@@ -68,8 +68,7 @@ add_library(vortex_hip SHARED
 
 target_include_directories(vortex_hip
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/hip_vortex_runtime/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/host>
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${VORTEX_INCLUDE_DIR}
@@ -104,7 +103,7 @@ install(TARGETS vortex_hip
     RUNTIME DESTINATION bin
 )
 
-install(DIRECTORY include/
+install(DIRECTORY host/
     DESTINATION include
     FILES_MATCHING PATTERN "*.h"
 )

@@ -188,23 +188,6 @@ No manual kernel registration required - it's automatic.
 
 ---
 
-## How It Works
-
-The `hipLaunchKernelGGL` macro automatically loads the kernel binary at runtime:
-
-1. **Compile time**: `hipLaunchKernelGGL(my_kernel, grid, block, ...)` is transformed to `hipLaunchKernelByName("my_kernel", ...)`
-
-2. **Runtime**: On first kernel launch:
-   - Looks for `./my_kernel.vxbin`
-   - Falls back to `./kernel.vxbin`
-   - Loads kernel binary to device memory
-   - Caches for subsequent launches
-   - Executes with provided arguments
-
-No manual kernel registration required - it's automatic.
-
----
-
 ## Compiling HIP Kernels for Vortex
 
 The compilation pipeline uses **split compilation** - host and device code are compiled separately, with metadata generated during device compilation that is used by the host compilation.
