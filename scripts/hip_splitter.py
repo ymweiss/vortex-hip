@@ -269,6 +269,7 @@ $REPO_ROOT/scripts/polygeist/hip-to-gpu-dialect.sh \\
 
 # Stage 2: GPU dialect → Vortex MLIR
 $REPO_ROOT/Polygeist/build/bin/polygeist-opt \\
+    --reorder-gpu-kernel-args \\
     --convert-gpu-to-vortex \\
     $SCRIPT_DIR/{kernel_name}_kernel.mlir \\
     -o $SCRIPT_DIR/{kernel_name}_kernel_vortex.mlir
