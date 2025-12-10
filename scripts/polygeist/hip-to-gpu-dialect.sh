@@ -23,8 +23,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 POLYGEIST_SRC="$REPO_ROOT/Polygeist"
 CGEIST="$POLYGEIST_SRC/build/bin/cgeist"
 RESOURCE_DIR="$POLYGEIST_SRC/llvm-project/build/lib/clang/18"
-# Use minimal Vortex HIP header (exports Vortex variables, avoids full HIP dependency chain)
-HIP_INCLUDE="$REPO_ROOT/hip_runtime_vortex/include"
+# Use device HIP header (provides threadIdx, blockIdx, etc. for Polygeist)
+HIP_INCLUDE="$REPO_ROOT/runtime/device"
 
 if [ ! -f "$CGEIST" ]; then
     echo "Error: cgeist not found at $CGEIST"

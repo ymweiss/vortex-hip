@@ -5,7 +5,7 @@ inject_kernel_launchers.py - Prepare HIP kernel source for Polygeist compilation
 This script processes HIP source files to prepare them for device compilation
 through Polygeist. It performs two transformations:
 
-1. Replaces standard HIP includes with hip_runtime_vortex/hip_runtime.h which
+1. Replaces standard HIP includes with runtime/device/hip_runtime.h which
    provides __clang_cuda_builtin_vars.h for proper GPU variable support
 
 2. Adds synthetic launch wrappers for each __global__ kernel function.
@@ -33,7 +33,7 @@ After processing, compile the output with Polygeist using:
 
 Where:
     $POLYGEIST = path to Polygeist source directory
-    $VORTEX_HIP = path to vortex_hip repository root (contains hip_runtime_vortex/)
+    $VORTEX_HIP = path to vortex_hip repository root (contains runtime/device/)
 """
 
 import re
@@ -43,7 +43,7 @@ import sys
 def extract_kernels(source: str) -> list:
     """
     Extract kernel function declarations from HIP/CUDA source.
-    Returns list of tuples: (kernel_name, params_str, param_names)
+    Returns list of tuples: (kernel_name, params_str, param_names, param_is_pointer)
     """
     # Pattern to match __global__ function declarations
     # Handles: __global__ void name(params) and __global__ __attribute__(...) void name(params)
@@ -62,12 +62,16 @@ def extract_kernels(source: str) -> list:
         kernel_name = match.group(1)
         params_str = match.group(2).strip()
 
-        # Parse parameter names from the params string
+        # Parse parameter names and types from the params string
         param_names = []
+        param_is_pointer = []
         if params_str:
             # Split by comma, extract the variable name (last word before any default value)
             for param in params_str.split(','):
                 param = param.strip()
+                # Check if it's a pointer (has * in the declaration)
+                is_ptr = '*' in param
+                param_is_pointer.append(is_ptr)
                 # Remove array brackets like "float data[]" -> "float data"
                 param = re.sub(r'\[[^\]]*\]', '', param)
                 # Remove * and & from the parameter
@@ -80,12 +84,12 @@ def extract_kernels(source: str) -> list:
                     if name and name not in ('const', 'volatile', 'restrict'):
                         param_names.append(name)
 
-        kernels.append((kernel_name, params_str, param_names))
+        kernels.append((kernel_name, params_str, param_names, param_is_pointer))
 
     return kernels
 
 
-def generate_launcher(kernel_name: str, params_str: str, param_names: list) -> str:
+def generate_launcher(kernel_name: str, params_str: str, param_names: list, param_is_pointer: list = None) -> str:
     """Generate a synthetic launch wrapper for a kernel."""
     args = ', '.join(param_names)
 
@@ -108,7 +112,7 @@ def transform_includes(source: str) -> str:
     """Transform HIP includes for dual host/device compilation.
 
     Creates conditional include using __CUDA__ macro:
-    - Device compilation (__CUDA__ defined): hip_runtime_vortex/hip_runtime.h
+    - Device compilation (__CUDA__ defined): runtime/device/hip_runtime.h
     - Host compilation (__CUDA__ not defined): vortex_hip_runtime.h (Vortex HIP API)
     """
     # Pattern to match various forms of hip/hip_runtime.h include
@@ -307,7 +311,50 @@ def extract_relevant_defines(source: str) -> str:
     return '\n'.join(defines)
 
 
-def reorganize_for_device_compilation(source: str) -> str:
+def transform_kernel_launch_calls(source: str, kernels: list) -> str:
+    """Transform hipLaunchKernelGGL calls to use generated stub functions.
+
+    Transforms:
+        hipLaunchKernelGGL(kernel_name, grid, block, shared, stream, arg1, arg2, ...)
+    Into:
+        launch_kernel_name(grid, block, arg1, arg2, ...)
+
+    This is needed because the generated stubs handle argument reordering
+    and pointer conversion for Vortex kernels.
+    """
+    result = source
+
+    for kernel_info in kernels:
+        kernel_name, params_str, param_names = kernel_info[:3]
+        param_is_pointer = kernel_info[3] if len(kernel_info) > 3 else []
+        # Build launcher function name
+        launcher_name = f"launch_{kernel_name}"
+
+        # Pattern to match hipLaunchKernelGGL(kernel_name, ...)
+        # Note: This is a simplistic pattern that may not handle all cases
+        pattern = re.compile(
+            r'hipLaunchKernelGGL\s*\(\s*' + re.escape(kernel_name) + r'\s*,\s*'
+            r'([^,]+)\s*,\s*'     # grid dim
+            r'([^,]+)\s*,\s*'     # block dim
+            r'([^,]+)\s*,\s*'     # shared mem
+            r'([^,]+)\s*,\s*'     # stream
+            r'([^)]+)\)',         # remaining args
+            re.MULTILINE | re.DOTALL
+        )
+
+        def replace_launch(match):
+            grid = match.group(1).strip()
+            block = match.group(2).strip()
+            # shared and stream are ignored - vortexLaunchKernel doesn't use them yet
+            args = match.group(5).strip()
+            return f'{launcher_name}({grid}, {block}, {args})'
+
+        result = pattern.sub(replace_launch, result)
+
+    return result
+
+
+def reorganize_for_device_compilation(source: str, kernels: list = None) -> str:
     """Reorganize source for device compilation with Polygeist.
 
     Structure of output:
@@ -316,6 +363,8 @@ def reorganize_for_device_compilation(source: str) -> str:
     3. Kernel function definitions (device code)
     4. Synthetic launch wrappers (device code)
     5. Everything else wrapped in #ifndef __CUDA__ (host-only)
+       - Includes kernel_stubs.h for launch functions
+       - Transforms hipLaunchKernelGGL to use generated stubs
 
     This ensures Polygeist only sees: HIP header + defines + kernels + launch wrappers
     """
@@ -328,13 +377,37 @@ def reorganize_for_device_compilation(source: str) -> str:
     # Extract relevant defines that kernels may need
     defines = extract_relevant_defines(source)
 
+    # Transform hipLaunchKernelGGL calls in host code to use stubs
+    if kernels:
+        remaining = transform_kernel_launch_calls(remaining, kernels)
+
+    # Insert kernel_stubs.h include after the first #include in host code
+    # This ensures it comes after hip/hip_runtime.h
+    remaining_with_stubs = re.sub(
+        r'(#include\s*<hip/hip_runtime\.h>)',
+        r'\1\n// Include generated kernel stubs for Vortex launch\n#include "kernel_stubs.h"',
+        remaining,
+        count=1
+    )
+    # If no hip/hip_runtime.h found, try other common patterns
+    if remaining_with_stubs == remaining:
+        remaining_with_stubs = re.sub(
+            r'(#include\s*[<"]hip_vortex_runtime\.h[>"])',
+            r'\1\n// Include generated kernel stubs for Vortex launch\n#include "kernel_stubs.h"',
+            remaining,
+            count=1
+        )
+    # Fallback: add at the very start of host code section
+    if remaining_with_stubs == remaining:
+        remaining_with_stubs = '// Include generated kernel stubs for Vortex launch\n#include "kernel_stubs.h"\n' + remaining
+
     # Build the reorganized source
     result = '''// Reorganized for Polygeist device compilation
 // Auto-generated by inject_kernel_launchers.py
 
 // Device header (provides __global__, threadIdx, blockIdx, etc.)
 #ifdef __CUDA__
-#include "hip_runtime_vortex/hip_runtime.h"
+#include "hip_runtime.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -356,7 +429,7 @@ def reorganize_for_device_compilation(source: str) -> str:
 // Host Code (excluded from device compilation)
 // =============================================================================
 #ifndef __CUDA__
-''' + remaining + '''
+''' + remaining_with_stubs + '''
 #endif  // !__CUDA__
 '''
 
@@ -378,7 +451,8 @@ def inject_launchers(source: str, for_device: bool = True) -> str:
 
     if for_device:
         # Reorganize source: HIP header + kernels at top, rest gated as host-only
-        result = reorganize_for_device_compilation(source)
+        # Pass kernels to transform hipLaunchKernelGGL calls
+        result = reorganize_for_device_compilation(source, kernels)
     else:
         # For host compilation, keep original structure
         result = source
@@ -386,8 +460,10 @@ def inject_launchers(source: str, for_device: bool = True) -> str:
     if for_device:
         # Generate all launchers for device compilation
         launchers = []
-        for kernel_name, params_str, param_names in kernels:
-            launcher = generate_launcher(kernel_name, params_str, param_names)
+        for kernel_info in kernels:
+            kernel_name, params_str, param_names = kernel_info[:3]
+            param_is_pointer = kernel_info[3] if len(kernel_info) > 3 else []
+            launcher = generate_launcher(kernel_name, params_str, param_names, param_is_pointer)
             launchers.append(launcher)
 
         # Add launchers at the end of the file (only for device path)

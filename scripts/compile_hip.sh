@@ -353,11 +353,12 @@ compile_device() {
 
     # 2d: MLIR lowering → LLVM Dialect
     log_info "  2d: MLIR lowering → LLVM Dialect"
+    # Note: index-bitwidth=32 for RV32 Vortex target
     run_cmd "$MLIR_OPT" "$TEMP_DIR/vortex.mlir" \
         --convert-scf-to-cf \
         --convert-arith-to-llvm \
         --finalize-memref-to-llvm \
-        --convert-index-to-llvm \
+        --convert-index-to-llvm=index-bitwidth=32 \
         --convert-func-to-llvm \
         --convert-cf-to-llvm \
         --reconcile-unrealized-casts \
@@ -457,8 +458,7 @@ compile_host() {
     log_info "  Compiling host object"
     run_cmd g++ -x c++ -c "$HOST_SOURCE" \
         -o "$TEMP_DIR/host.o" \
-        -I"$VORTEX_HIP_HOME/runtime/hip_vortex_runtime/include" \
-        -I"$VORTEX_HIP_HOME/runtime/include" \
+        -I"$VORTEX_HIP_HOME/runtime/host" \
         -I"$TEMP_DIR" \
         -std=c++17 \
         -DVORTEX_HIP_HOST \

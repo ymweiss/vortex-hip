@@ -134,11 +134,14 @@ int main(int argc, char *argv[]) {
 
   // Launch kernel
   printf("launch kernel\n");
-  int threads_per_block = 64;
+  // Note: Default Vortex SimX config has NUM_WARPS=4 x NUM_THREADS=4 = 16 threads per core
+  // Using threads_per_block <= 16 for compatibility with default config
+  int threads_per_block = 16;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
-  hipLaunchKernelGGL(vecadd_kernel, dim3(num_blocks), dim3(threads_per_block), 0, 0,
-                     d_src0, d_src1, d_dst, num_points);
+  // Standard HIP kernel launch (transformed to use Vortex stubs by pipeline)
+  hipLaunchKernelGGL(vecadd_kernel, dim3(num_blocks), dim3(threads_per_block),
+                     0, 0, d_src0, d_src1, d_dst, num_points);
 
   // Wait for completion
   printf("wait for completion\n");
