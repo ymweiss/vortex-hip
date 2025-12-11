@@ -308,26 +308,31 @@ compile_device() {
         # User provided an MLIR file directly
         log_info "  Using provided MLIR file: $MLIR_INPUT"
         cp "$MLIR_INPUT" "$TEMP_DIR/gpu.mlir"
-    elif [ -f "$PRE_EXISTING_MLIR" ]; then
-        # Use pre-existing kernel MLIR from hip_tests/mlir_output/
-        log_info "  Using pre-existing MLIR: $PRE_EXISTING_MLIR"
-        cp "$PRE_EXISTING_MLIR" "$TEMP_DIR/gpu.mlir"
     else
         # Try to generate using hip-to-gpu-dialect.sh
         # Use the transformed source (with host code gated) instead of original
         HIP_TO_GPU_SCRIPT="$SCRIPT_DIR/polygeist/hip-to-gpu-dialect.sh"
+        MLIR_GENERATED=0
         if [ -f "$HIP_TO_GPU_SCRIPT" ]; then
             log_info "  Running hip-to-gpu-dialect.sh on transformed source..."
             if run_cmd "$HIP_TO_GPU_SCRIPT" "$TEMP_DIR/transformed.cu" "$TEMP_DIR/gpu.mlir" 2>/dev/null; then
                 log_success "  Generated GPU MLIR"
+                MLIR_GENERATED=1
             else
-                log_error "hip-to-gpu-dialect.sh failed and no pre-existing MLIR found"
-                log_error "Pre-existing MLIR would be at: $PRE_EXISTING_MLIR"
+                log_warn "  hip-to-gpu-dialect.sh failed, checking for cached MLIR..."
+            fi
+        fi
+
+        # Fallback to cached MLIR only if generation failed
+        if [ "$MLIR_GENERATED" -eq 0 ]; then
+            if [ -f "$PRE_EXISTING_MLIR" ]; then
+                log_warn "  Using cached MLIR as fallback: $PRE_EXISTING_MLIR"
+                cp "$PRE_EXISTING_MLIR" "$TEMP_DIR/gpu.mlir"
+            else
+                log_error "MLIR generation failed and no cached MLIR found"
+                log_error "Expected cache location: $PRE_EXISTING_MLIR"
                 exit 1
             fi
-        else
-            log_error "hip-to-gpu-dialect.sh not found at $HIP_TO_GPU_SCRIPT"
-            exit 1
         fi
     fi
 

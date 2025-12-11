@@ -37,36 +37,58 @@ def extract_base_kernel_name(full_name: str) -> str:
 
     Polygeist generates kernel variants with numeric suffixes like:
         __polygeist_launch_vecadd_kernel_kernel94263111661472
-        _Z13launch_vecaddPKfS0_Pfji
+        __polygeist_launch_bitonic_sort_step
 
-    We want to extract:
-        vecadd_kernel (for __polygeist_launch_ prefix)
-        launch_vecadd (for mangled names)
+    We want to extract the original kernel name exactly as it appears in the HIP source:
+        vecadd_kernel (for __polygeist_launch_vecadd_kernel_kernel12345)
+        bitonic_sort_step (for __polygeist_launch_bitonic_sort_step)
+        demo_kernel (for __polygeist_launch_demo_kernel)
+
+    The extracted name must match what inject_kernel_launchers.py uses to generate
+    launcher functions: launch_<kernel_name>()
     """
+    base_name = None
+
     # Handle __polygeist_launch_ prefix
     if full_name.startswith("__polygeist_launch_"):
         name = full_name[len("__polygeist_launch_"):]
-        # Remove numeric suffix (e.g., _kernel94263111661472)
-        # Pattern: _kernel followed by digits at the end
-        match = re.match(r"(.+?)_kernel\d+$", name)
-        if match:
-            return match.group(1)
-        # Pattern: just digits at the end after last underscore
-        match = re.match(r"(.+?)_\d+$", name)
-        if match:
-            return match.group(1)
-        return name
 
-    # Handle mangled C++ names (_Z...)
-    if full_name.startswith("_Z"):
+        # Try to detect and remove numeric suffix variants
+        # Pattern 1: name_kernel followed by digits (e.g., demo_kernel94263)
+        # This happens when kernel name ends with _kernel and Polygeist adds numbers
+        match = re.match(r"(.+_kernel)\d+$", name)
+        if match:
+            base_name = match.group(1)
+        else:
+            # Pattern 2: any name followed by underscore and digits at the end
+            # e.g., bitonic_sort_step_12345 -> bitonic_sort_step
+            # But be careful not to strip valid parts like sort_step
+            match = re.match(r"(.+?)_(\d{6,})$", name)  # Only strip if 6+ digits (Polygeist IDs)
+            if match:
+                base_name = match.group(1)
+            else:
+                # No numeric suffix, use as-is
+                base_name = name
+
+    # Handle mangled C++ names (_Z...) - legacy/fallback
+    elif full_name.startswith("_Z"):
         # Try to demangle - extract function name portion
         # Simple pattern: _Z<len><name>...
         match = re.match(r"_Z(\d+)(\w+)", full_name)
         if match:
             name_len = int(match.group(1))
-            return match.group(2)[:name_len]
+            base_name = match.group(2)[:name_len]
+            # Mangled names have "launch_" prefix from the wrapper
+            # e.g., _Z11launch_demo... -> launch_demo
+            # But the kernel itself is "demo", so we strip launch_
+            # and rely on the _kernel suffix being in the original name
+            if base_name.startswith("launch_"):
+                base_name = base_name[len("launch_"):]
 
-    return full_name
+    if base_name is None:
+        base_name = full_name
+
+    return base_name
 
 
 def type_to_cpp(type_str: str, is_pointer: bool, for_struct: bool = False) -> str:
