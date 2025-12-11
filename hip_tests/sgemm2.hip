@@ -3,8 +3,11 @@
 // Computes C = A * B for square matrices using shared memory tiling
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
 #ifndef TYPE
 #define TYPE float
