@@ -14,8 +14,12 @@ hipError_t hipMalloc(void** devPtr, size_t size) {
         return hipErrorInvalidValue;
     }
 
+    // Auto-initialize device if not already done
     if (g_vortex_device == nullptr) {
-        return hipErrorNotInitialized;
+        hipError_t err = hipSetDevice(0);
+        if (err != hipSuccess) {
+            return err;
+        }
     }
 
     vx_buffer_h buffer;

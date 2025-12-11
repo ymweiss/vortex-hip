@@ -334,10 +334,7 @@ compile_device() {
     # 2b: GPU MLIR → Vortex MLIR (+ metadata)
     log_info "  2b: GPU Dialect → Vortex MLIR (+ metadata generation)"
     pushd "$TEMP_DIR" > /dev/null
-    # Note: Argument reordering is now handled in KernelOutlining.cpp
-    # which preserves original argument order from host wrapper functions.
     run_cmd "$POLYGEIST_OPT" gpu.mlir \
-        --reorder-gpu-kernel-args \
         --convert-gpu-to-vortex \
         -o vortex.mlir
     popd > /dev/null
