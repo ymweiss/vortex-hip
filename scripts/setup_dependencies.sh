@@ -16,6 +16,11 @@
 #   --skip-polygeist    Skip Polygeist build (if already built)
 #   --skip-llvm-vortex  Skip llvm-vortex build (if already built)
 #   --skip-runtime      Skip HIP runtime build (if already built)
+#   --force-vortex      Force rebuild Vortex (delete existing build)
+#   --force-polygeist   Force rebuild Polygeist (delete existing build)
+#   --force-llvm-vortex Force rebuild llvm-vortex (delete existing build)
+#   --force-runtime     Force rebuild HIP runtime (delete existing build)
+#   --force-all         Force rebuild all components
 #   --jobs <N>          Number of parallel jobs (default: auto-detect)
 #   --tooldir <path>    Toolchain install directory (default: $HOME/tools)
 #   --help              Show this help message
@@ -31,6 +36,10 @@
 # System dependencies (installed automatically with sudo):
 #   - build-essential, zlib1g-dev, libtinfo-dev, libncurses5
 #   - uuid-dev, libboost-serialization-dev, libpng-dev, libhwloc-dev
+#
+# Note: System dependency installation is automatically skipped if sudo
+# is unavailable or requires a password. Use --skip-system-deps to
+# suppress the warning message.
 #
 
 set -e
@@ -52,6 +61,10 @@ SKIP_POLYGEIST=0
 SKIP_LLVM_VORTEX=0
 SKIP_RUNTIME=0
 SKIP_SYSTEM_DEPS=0
+FORCE_VORTEX=0
+FORCE_POLYGEIST=0
+FORCE_LLVM_VORTEX=0
+FORCE_RUNTIME=0
 JOBS=""
 TOOLDIR="$HOME/tools"
 
@@ -94,6 +107,11 @@ Options:
   --skip-llvm-vortex  Skip llvm-vortex build (if already built)
   --skip-runtime      Skip HIP runtime build (if already built)
   --skip-system-deps  Skip system dependency installation (requires sudo)
+  --force-vortex      Force rebuild Vortex (delete existing build)
+  --force-polygeist   Force rebuild Polygeist (delete existing build)
+  --force-llvm-vortex Force rebuild llvm-vortex (delete existing build)
+  --force-runtime     Force rebuild HIP runtime (delete existing build)
+  --force-all         Force rebuild all components
   --jobs <N>          Number of parallel jobs (default: auto-detect)
   --tooldir <path>    Toolchain install directory (default: $HOME/tools)
   --help              Show this help message
@@ -132,6 +150,29 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-system-deps)
             SKIP_SYSTEM_DEPS=1
+            shift
+            ;;
+        --force-vortex)
+            FORCE_VORTEX=1
+            shift
+            ;;
+        --force-polygeist)
+            FORCE_POLYGEIST=1
+            shift
+            ;;
+        --force-llvm-vortex)
+            FORCE_LLVM_VORTEX=1
+            shift
+            ;;
+        --force-runtime)
+            FORCE_RUNTIME=1
+            shift
+            ;;
+        --force-all)
+            FORCE_VORTEX=1
+            FORCE_POLYGEIST=1
+            FORCE_LLVM_VORTEX=1
+            FORCE_RUNTIME=1
             shift
             ;;
         --jobs)
@@ -228,6 +269,20 @@ install_system_deps() {
 
     log_step "Installing system dependencies"
 
+    # Check if sudo is available and working
+    if ! command -v sudo >/dev/null 2>&1; then
+        log_warn "sudo not found, skipping system dependency installation"
+        log_info "Please install dependencies manually if needed"
+        return 0
+    fi
+
+    # Test if sudo works (non-interactive)
+    if ! sudo -n true 2>/dev/null; then
+        log_warn "sudo requires password or is not configured, skipping system dependency installation"
+        log_info "Run with sudo permissions or use --skip-system-deps to suppress this warning"
+        return 0
+    fi
+
     if command -v apt-get >/dev/null 2>&1; then
         log_info "Detected Debian/Ubuntu system"
 
@@ -288,9 +343,15 @@ build_vortex() {
 
     cd "$PROJECT_ROOT/vortex"
 
+    # Force rebuild if requested
+    if [ "$FORCE_VORTEX" -eq 1 ] && [ -d "build" ]; then
+        log_warn "Force rebuild requested, removing existing Vortex build..."
+        rm -rf build
+    fi
+
     # Check if already built
     if [ -f "build/runtime/libvortex.so" ] && [ -f "build/kernel/libvortex.a" ]; then
-        log_info "Vortex already built, skipping (use --skip-vortex=0 to force rebuild)"
+        log_info "Vortex already built, skipping (use --force-vortex to rebuild)"
         return 0
     fi
 
@@ -331,9 +392,21 @@ build_polygeist() {
 
     cd "$PROJECT_ROOT/Polygeist"
 
+    # Force rebuild if requested
+    if [ "$FORCE_POLYGEIST" -eq 1 ]; then
+        if [ -d "build" ]; then
+            log_warn "Force rebuild requested, removing existing Polygeist build..."
+            rm -rf build
+        fi
+        if [ -d "llvm-project/build" ]; then
+            log_warn "Force rebuild requested, removing existing LLVM/MLIR build..."
+            rm -rf llvm-project/build
+        fi
+    fi
+
     # Check if already built
     if [ -f "build/bin/cgeist" ] && [ -f "build/bin/polygeist-opt" ]; then
-        log_info "Polygeist already built, skipping"
+        log_info "Polygeist already built, skipping (use --force-polygeist to rebuild)"
         return 0
     fi
 
@@ -390,9 +463,15 @@ build_llvm_vortex() {
 
     cd "$PROJECT_ROOT/llvm-vortex"
 
+    # Force rebuild if requested
+    if [ "$FORCE_LLVM_VORTEX" -eq 1 ] && [ -d "build" ]; then
+        log_warn "Force rebuild requested, removing existing llvm-vortex build..."
+        rm -rf build
+    fi
+
     # Check if already built
     if [ -f "build/bin/clang" ] && [ -f "build/bin/llc" ]; then
-        log_info "llvm-vortex already built, skipping"
+        log_info "llvm-vortex already built, skipping (use --force-llvm-vortex to rebuild)"
         return 0
     fi
 
@@ -427,9 +506,15 @@ build_hip_runtime() {
 
     cd "$PROJECT_ROOT/runtime"
 
+    # Force rebuild if requested
+    if [ "$FORCE_RUNTIME" -eq 1 ] && [ -d "build" ]; then
+        log_warn "Force rebuild requested, removing existing HIP runtime build..."
+        rm -rf build
+    fi
+
     # Check if already built
     if [ -f "build/libhip_vortex.so" ]; then
-        log_info "HIP runtime already built, skipping"
+        log_info "HIP runtime already built, skipping (use --force-runtime to rebuild)"
         return 0
     fi
 
