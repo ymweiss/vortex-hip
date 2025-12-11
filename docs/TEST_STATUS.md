@@ -9,6 +9,7 @@ This document tracks the status of HIP test cases and what is required for faili
 | basic.hip | PASS | PASS | **WORKING** |
 | relu.hip | PASS | PASS | **WORKING** |
 | vecadd.hip | PASS | PASS | **WORKING** |
+| printf.hip | PASS | PASS | **WORKING** |
 | demo.hip | PASS | FAIL | Runtime issue (wrong output) |
 | cta.hip | PASS | FAIL | Runtime issue |
 | fence.hip | FAIL | - | `__threadfence` not supported |
@@ -18,7 +19,6 @@ This document tracks the status of HIP test cases and what is required for faili
 | dropout.hip | FAIL | - | `__device__` functions |
 | madmax.hip | FAIL | - | `__device__` functions |
 | mstress.hip | FAIL | - | Missing atomic functions |
-| printf.hip | FAIL | - | MLIR type mismatch (ptr/i32) |
 | io_addr.hip | PASS | FAIL | Runtime issue |
 | sort.hip | PASS | FAIL | Runtime issue |
 | sgemv.hip | PASS | FAIL | Runtime issue |
@@ -28,7 +28,7 @@ This document tracks the status of HIP test cases and what is required for faili
 | sgemm2.hip | PASS | FAIL | 2D thread blocks not supported |
 | sgemm_tcu.hip | FAIL | - | Multiple kernels |
 
-**Summary:** 3 passing, 11 compile + run but fail at runtime, 7 fail at compile time
+**Summary:** 4 passing, 10 compile + run but fail at runtime, 7 fail at compile time
 
 ## Failure Categories
 
@@ -117,22 +117,9 @@ error: 'kernel_iadd' was not declared in this scope
 
 ---
 
-### 6. MLIR/Lowering Issues
-
-**Affected tests:** printf
-
-**Error pattern:**
-```
-error: 'llvm.call' op operand type mismatch for operand 8: 'i32' != '!llvm.ptr'
-```
-
-**Cause:** Type mismatch during MLIR to LLVM lowering, possibly related to variadic printf arguments.
-
----
-
 ## Working Tests Analysis
 
-The three working tests (basic, relu, vecadd) share these characteristics:
+The four working tests (basic, relu, vecadd, printf) share these characteristics:
 - Single kernel per file
 - 1D thread blocks only
 - No `__device__` helper functions
@@ -144,6 +131,8 @@ The three working tests (basic, relu, vecadd) share these characteristics:
 1. **Kernel Naming Mismatch (FIXED):** Updated `generate_host_stubs.py` to correctly extract kernel names from Polygeist-generated metadata, matching the launcher names produced by `inject_kernel_launchers.py`.
 
 2. **MLIR Cache Behavior (FIXED):** Updated `compile_hip.sh` to prefer fresh MLIR generation over cached files, falling back to cache only if generation fails.
+
+3. **Printf Support (FIXED):** Updated `GenerateVortexMain.cpp` in Polygeist to handle pointer-type synthetic arguments (like format strings) by looking up global string constants instead of defaulting to `i32` zero.
 
 ## Priority Fixes
 
