@@ -3,7 +3,11 @@
 // Implementation uses bitonic sorting network for parallel GPU sorting
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
 #ifndef TYPE
 #define TYPE int

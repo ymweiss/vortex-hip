@@ -3,8 +3,12 @@
 // Applies ReLU activation function: f(x) = max(0, x)
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <limits>
 
 #ifndef TYPE
 #define TYPE float
@@ -72,7 +76,7 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipMemcpy(d_src, h_src.data(), buf_size, hipMemcpyHostToDevice));
 
   // Launch kernel
-  int threads_per_block = 64;
+  int threads_per_block = 16;  // Match Vortex simulator thread count
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
   hipLaunchKernelGGL(relu_kernel, dim3(num_blocks), dim3(threads_per_block), 0, 0,

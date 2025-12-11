@@ -3,8 +3,11 @@
 // Tests memory fence operations to ensure proper memory ordering
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
 #ifndef TYPE
 #define TYPE int32_t

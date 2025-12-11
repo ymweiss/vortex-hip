@@ -2,8 +2,11 @@
 // Converted from Vortex regression test: vortex/tests/regression/printf
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
 #define HIP_CHECK(call) \
   do { \

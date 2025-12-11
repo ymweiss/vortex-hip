@@ -5,8 +5,11 @@
 // Each thread computes: globalId + src[localId] and writes to dst[globalId]
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
 #define HIP_CHECK(call) \
   do { \

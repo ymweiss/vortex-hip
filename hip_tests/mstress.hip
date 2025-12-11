@@ -3,7 +3,12 @@
 // Tests indirect memory access patterns with multiple loads per thread
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <cmath>
 #include <limits>
 
 #define NUM_LOADS 8

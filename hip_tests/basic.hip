@@ -3,8 +3,11 @@
 // Tests basic memory copy functionality using GPU
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
 #define NONCE 0xdeadbeef
 
@@ -77,7 +80,7 @@ int main(int argc, char *argv[]) {
 
   // Launch kernel
   printf("launch kernel\n");
-  int threads_per_block = 64;
+  int threads_per_block = 16;  // Match Vortex simulator thread count
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
   hipLaunchKernelGGL(basic_kernel, dim3(num_blocks), dim3(threads_per_block), 0, 0,

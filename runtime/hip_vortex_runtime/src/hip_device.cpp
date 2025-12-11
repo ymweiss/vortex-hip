@@ -87,9 +87,14 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* prop, int deviceId) {
         return hipErrorInvalidDevice;
     }
 
+    // Auto-initialize device if not already done
     vx_device_h device = __hip_get_vortex_device();
     if (device == nullptr) {
-        return hipErrorNotInitialized;
+        hipError_t err = hipSetDevice(0);
+        if (err != hipSuccess) {
+            return err;
+        }
+        device = __hip_get_vortex_device();
     }
 
     // Query Vortex device capabilities
