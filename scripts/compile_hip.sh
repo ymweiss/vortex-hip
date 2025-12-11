@@ -337,6 +337,7 @@ compile_device() {
     # Note: Argument reordering is now handled in KernelOutlining.cpp
     # which preserves original argument order from host wrapper functions.
     run_cmd "$POLYGEIST_OPT" gpu.mlir \
+        --reorder-gpu-kernel-args \
         --convert-gpu-to-vortex \
         -o vortex.mlir
     popd > /dev/null
