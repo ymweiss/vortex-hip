@@ -334,6 +334,8 @@ compile_device() {
     # 2b: GPU MLIR → Vortex MLIR (+ metadata)
     log_info "  2b: GPU Dialect → Vortex MLIR (+ metadata generation)"
     pushd "$TEMP_DIR" > /dev/null
+    # Note: Argument reordering is now handled in KernelOutlining.cpp
+    # which preserves original argument order from host wrapper functions.
     run_cmd "$POLYGEIST_OPT" gpu.mlir \
         --reorder-gpu-kernel-args \
         --convert-gpu-to-vortex \
@@ -391,11 +393,14 @@ compile_device() {
     # Step 1: Compile LLVM IR to object file using llc
     # This allows us to set the correct RISC-V target triple
     # (mlir-translate outputs x86_64 target triple by default)
+    # Note: +vortex enables Vortex-specific ISA extensions
+    # --vortex-branch-divergence=1 enables automatic split/join insertion for divergent branches
     log_info "    Compiling LLVM IR to RISC-V object"
     run_cmd "$LLC_VORTEX" \
         --mtriple=riscv32-unknown-unknown-elf \
         -march=riscv32 \
-        -mattr=+m,+a,+f \
+        -mattr=+m,+a,+f,+vortex \
+        --vortex-branch-divergence=1 \
         -filetype=obj \
         "$TEMP_DIR/kernel.ll" \
         -o "$TEMP_DIR/kernel.o" || {

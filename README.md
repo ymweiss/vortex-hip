@@ -317,14 +317,10 @@ python3 scripts/polygeist/inject_kernel_launchers.py vecadd.hip vecadd_transform
 
 **Generated structure:**
 ```cpp
-// Device header and defines
+// Device header and defines (Polygeist sees this via -I runtime/device)
 #ifdef __CUDA__
-#include "hip_runtime_vortex/hip_runtime.h"  // CUDA builtins
+#include "hip_runtime.h"  // -> runtime/device/hip_runtime.h (CUDA builtins)
 #include <stdint.h>
-
-#ifndef TYPE
-#define TYPE float
-#endif
 #endif
 
 // Kernel definitions (device only)
@@ -334,7 +330,7 @@ __global__ void vecadd_kernel(...) { ... }
 
 // Host code (excluded from device compilation)
 #ifndef __CUDA__
-#include <hip/hip_runtime.h>
+#include <hip/hip_runtime.h>  // -> runtime/host/hip/hip_runtime.h
 #include <iostream>
 ...
 int main() { ... }
@@ -359,7 +355,7 @@ void __polygeist_launch_vecadd_kernel(...) {
     --cuda-gpu-arch=sm_60 \
     -nocudalib -nocudainc \
     -resource-dir=./Polygeist/llvm-project/build/lib/clang/18 \
-    -I./hip_runtime_vortex/include \
+    -I./runtime/device \
     -I. \
     --function='*' \
     --output-intermediate-gpu=1 \
@@ -371,9 +367,12 @@ void __polygeist_launch_vecadd_kernel(...) {
 
 ```bash
 ./Polygeist/build/bin/polygeist-opt vecadd_gpu.mlir \
+    --reorder-gpu-kernel-args \
     --convert-gpu-to-vortex \
     -o vecadd_vortex.mlir
 ```
+
+The `--reorder-gpu-kernel-args` pass restores kernel arguments to their original HIP signature order (Polygeist reorders scalars before pointers).
 
 **This pass generates metadata files:**
 - `<kernel_name>.meta.json` - JSON metadata for runtime
@@ -539,8 +538,7 @@ The host compilation uses the transformed source and generated `kernel_stubs.h`:
 # Compile host code from transformed source
 # -DVORTEX_HIP_HOST gates out device code, includes host HIP runtime
 g++ -x c++ -c vecadd_transformed.cu -o vecadd_host.o \
-    -I $VORTEX_HIP_HOME/runtime/hip_vortex_runtime/include \
-    -I $VORTEX_HIP_HOME/runtime/include \
+    -I $VORTEX_HIP_HOME/runtime/host \
     -I .  \
     -std=c++17 \
     -DVORTEX_HIP_HOST
@@ -641,6 +639,7 @@ Polygeist (LLVM 18)              llvm-vortex (LLVM 18)
 
 # 2. GPU dialect → Vortex LLVM dialect
 ./Polygeist/build/bin/polygeist-opt kernel.mlir \
+    --reorder-gpu-kernel-args \
     --convert-gpu-to-vortex \
     --gpu-to-llvm \
     --generate-vortex-main \
@@ -673,14 +672,14 @@ vortex_hip/
 │       └── inject_kernel_launchers.py  # Source transformation
 │
 ├── runtime/
-│   └── hip_vortex_runtime/       # HIP API → Vortex runtime mapping
-│       ├── include/hip/
-│       │   └── hip_runtime.h     # HIP API declarations
-│       └── src/
-│           └── hip_runtime.cpp   # Runtime implementation
-│
-├── hip_runtime_vortex/
-│   └── hip_runtime.h            # Device-side header for Polygeist
+│   ├── host/                     # Host-side HIP runtime headers
+│   │   ├── hip_vortex_runtime.h  # Main host runtime (HIP API, vortexLaunchKernel)
+│   │   └── hip/
+│   │       └── hip_runtime.h     # Compatibility wrapper
+│   ├── device/                   # Device-side headers for Polygeist
+│   │   └── hip_runtime.h         # CUDA builtins (__global__, threadIdx, etc.)
+│   └── src/
+│       └── vortex_hip_runtime.cpp  # Runtime implementation
 │
 ├── hip_tests/
 │   ├── kernels/                 # HIP kernel sources
@@ -833,7 +832,7 @@ python3 scripts/polygeist/inject_kernel_launchers.py \
     --cuda-gpu-arch=sm_60 \
     -nocudalib -nocudainc \
     -resource-dir=./Polygeist/llvm-project/build/lib/clang/18 \
-    -I./hip_runtime_vortex/include \
+    -I./runtime/device \
     -I. \
     --function='*' \
     --output-intermediate-gpu=1 \
@@ -842,6 +841,7 @@ python3 scripts/polygeist/inject_kernel_launchers.py \
 
 # Step 3: GPU MLIR → Vortex MLIR (generates metadata files)
 ./Polygeist/build/bin/polygeist-opt /tmp/vecadd_gpu.mlir \
+    --reorder-gpu-kernel-args \
     --convert-gpu-to-vortex \
     -o /tmp/vecadd_vortex.mlir
 
@@ -964,7 +964,7 @@ for kernel in hip_tests/*.hip; do
         --cuda-lower --emit-cuda --cuda-gpu-arch=sm_60 \
         -nocudalib -nocudainc \
         -resource-dir=./Polygeist/llvm-project/build/lib/clang/18 \
-        -I./hip_runtime_vortex/include -I. \
+        -I./runtime/device -I. \
         --function='*' --output-intermediate-gpu=1 -S \
         -o "hip_tests/mlir_output/${name}_kernel.mlir"
 done
@@ -991,17 +991,28 @@ Polygeist (LLVM 18)              llvm-vortex (LLVM 18)
         └────── LLVM IR (.ll) ───────────┘
 ```
 
-### Macro-Based Header Selection
+### HIP Runtime Header Structure
 
-The `inject_kernel_launchers.py` script uses `__CUDA__` macro (defined by Polygeist's clang) to select headers:
+The runtime headers are organized into host and device directories:
 
-```cpp
-#ifndef __CUDA__
-#include "hip/hip_runtime.h"           // Host: Vortex runtime API
-#else
-#include "hip_runtime_vortex/hip_runtime.h"  // Device: CUDA builtins
-#endif
 ```
+runtime/
+├── host/                          # Host-side headers (for g++ compilation)
+│   ├── hip_vortex_runtime.h       # Main runtime: HIP API + vortexLaunchKernel
+│   └── hip/
+│       └── hip_runtime.h          # Compatibility wrapper (includes hip_vortex_runtime.h)
+│
+└── device/                        # Device-side headers (for Polygeist)
+    └── hip_runtime.h              # CUDA builtins: __global__, threadIdx, blockIdx, etc.
+```
+
+**Host compilation** (g++ with `-I runtime/host`):
+- `#include <hip/hip_runtime.h>` → `runtime/host/hip/hip_runtime.h`
+- Provides HIP API (hipMalloc, hipMemcpy, etc.) mapped to Vortex runtime
+
+**Device compilation** (Polygeist with `-I runtime/device`):
+- Uses `runtime/device/hip_runtime.h`
+- Provides CUDA builtins that Polygeist understands (`__global__`, `threadIdx`, etc.)
 
 ---
 

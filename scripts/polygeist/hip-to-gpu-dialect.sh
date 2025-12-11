@@ -51,6 +51,7 @@ fi
 $CGEIST "$CGEIST_INPUT" \
     --cuda-lower \
     --emit-cuda \
+    --use-original-gpu-block-size \
     --cuda-gpu-arch=sm_60 \
     -nocudalib \
     -nocudainc \
