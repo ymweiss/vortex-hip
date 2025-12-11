@@ -2,7 +2,11 @@
 // Converted from Vortex regression test: vortex/tests/regression/io_addr
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
 #define NUM_ADDRS 16
 

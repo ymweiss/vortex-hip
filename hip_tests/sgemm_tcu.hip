@@ -7,8 +7,13 @@
 // the original TCU test structure.
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <cmath>
+#include <limits>
 
 // Default matrix element types
 #ifndef ITYPE

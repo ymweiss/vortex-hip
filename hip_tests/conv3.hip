@@ -2,8 +2,13 @@
 // Converted from Vortex regression test: vortex/tests/regression/conv3
 
 #include <hip/hip_runtime.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <cmath>
+#include <limits>
 
 #ifndef TYPE
 #define TYPE float
