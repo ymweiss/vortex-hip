@@ -308,26 +308,31 @@ compile_device() {
         # User provided an MLIR file directly
         log_info "  Using provided MLIR file: $MLIR_INPUT"
         cp "$MLIR_INPUT" "$TEMP_DIR/gpu.mlir"
-    elif [ -f "$PRE_EXISTING_MLIR" ]; then
-        # Use pre-existing kernel MLIR from hip_tests/mlir_output/
-        log_info "  Using pre-existing MLIR: $PRE_EXISTING_MLIR"
-        cp "$PRE_EXISTING_MLIR" "$TEMP_DIR/gpu.mlir"
     else
         # Try to generate using hip-to-gpu-dialect.sh
         # Use the transformed source (with host code gated) instead of original
         HIP_TO_GPU_SCRIPT="$SCRIPT_DIR/polygeist/hip-to-gpu-dialect.sh"
+        MLIR_GENERATED=0
         if [ -f "$HIP_TO_GPU_SCRIPT" ]; then
             log_info "  Running hip-to-gpu-dialect.sh on transformed source..."
             if run_cmd "$HIP_TO_GPU_SCRIPT" "$TEMP_DIR/transformed.cu" "$TEMP_DIR/gpu.mlir" 2>/dev/null; then
                 log_success "  Generated GPU MLIR"
+                MLIR_GENERATED=1
             else
-                log_error "hip-to-gpu-dialect.sh failed and no pre-existing MLIR found"
-                log_error "Pre-existing MLIR would be at: $PRE_EXISTING_MLIR"
+                log_warn "  hip-to-gpu-dialect.sh failed, checking for cached MLIR..."
+            fi
+        fi
+
+        # Fallback to cached MLIR only if generation failed
+        if [ "$MLIR_GENERATED" -eq 0 ]; then
+            if [ -f "$PRE_EXISTING_MLIR" ]; then
+                log_warn "  Using cached MLIR as fallback: $PRE_EXISTING_MLIR"
+                cp "$PRE_EXISTING_MLIR" "$TEMP_DIR/gpu.mlir"
+            else
+                log_error "MLIR generation failed and no cached MLIR found"
+                log_error "Expected cache location: $PRE_EXISTING_MLIR"
                 exit 1
             fi
-        else
-            log_error "hip-to-gpu-dialect.sh not found at $HIP_TO_GPU_SCRIPT"
-            exit 1
         fi
     fi
 
@@ -339,7 +344,7 @@ compile_device() {
         -o vortex.mlir
     popd > /dev/null
 
-    # 2c: Generate host stubs from metadata
+    # 2c: Generate host stubs from metadata and extract kernel name
     log_info "  2c: Generating host stubs from metadata"
     META_FILES=$(find "$TEMP_DIR" -name "*.meta.json" 2>/dev/null || true)
     if [ -z "$META_FILES" ]; then
@@ -349,6 +354,21 @@ compile_device() {
             $META_FILES \
             -o "$TEMP_DIR/kernel_stubs.h"
         log_success "Generated: $TEMP_DIR/kernel_stubs.h"
+
+        # Extract kernel name from metadata for .vxbin filename
+        # Only update KERNEL_NAME if it's still the default
+        if [ "$KERNEL_NAME" = "kernel.vxbin" ]; then
+            # Find the primary kernel metadata (prefer __polygeist_launch_ prefix)
+            PRIMARY_META=$(echo "$META_FILES" | tr ' ' '\n' | grep "__polygeist_launch_" | head -1)
+            if [ -n "$PRIMARY_META" ]; then
+                # Extract kernel name from JSON: look for "kernel_name" field
+                EXTRACTED_NAME=$(python3 -c "import json; f=open('$PRIMARY_META'); d=json.load(f); name=d.get('kernel_name',''); name=name.replace('__polygeist_launch_',''); import re; name=re.sub(r'_*\d{6,}$','',name); print(name+'_kernel' if name and not name.endswith('_kernel') else name)" 2>/dev/null || true)
+                if [ -n "$EXTRACTED_NAME" ]; then
+                    KERNEL_NAME="${EXTRACTED_NAME}.vxbin"
+                    log_info "  Using kernel name from metadata: $KERNEL_NAME"
+                fi
+            fi
+        fi
     fi
 
     # 2d: MLIR lowering → LLVM Dialect
