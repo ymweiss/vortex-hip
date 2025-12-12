@@ -344,7 +344,7 @@ compile_device() {
         -o vortex.mlir
     popd > /dev/null
 
-    # 2c: Generate host stubs from metadata
+    # 2c: Generate host stubs from metadata and extract kernel name
     log_info "  2c: Generating host stubs from metadata"
     META_FILES=$(find "$TEMP_DIR" -name "*.meta.json" 2>/dev/null || true)
     if [ -z "$META_FILES" ]; then
@@ -354,6 +354,21 @@ compile_device() {
             $META_FILES \
             -o "$TEMP_DIR/kernel_stubs.h"
         log_success "Generated: $TEMP_DIR/kernel_stubs.h"
+
+        # Extract kernel name from metadata for .vxbin filename
+        # Only update KERNEL_NAME if it's still the default
+        if [ "$KERNEL_NAME" = "kernel.vxbin" ]; then
+            # Find the primary kernel metadata (prefer __polygeist_launch_ prefix)
+            PRIMARY_META=$(echo "$META_FILES" | tr ' ' '\n' | grep "__polygeist_launch_" | head -1)
+            if [ -n "$PRIMARY_META" ]; then
+                # Extract kernel name from JSON: look for "kernel_name" field
+                EXTRACTED_NAME=$(python3 -c "import json; f=open('$PRIMARY_META'); d=json.load(f); name=d.get('kernel_name',''); name=name.replace('__polygeist_launch_',''); import re; name=re.sub(r'_*\d{6,}$','',name); print(name+'_kernel' if name and not name.endswith('_kernel') else name)" 2>/dev/null || true)
+                if [ -n "$EXTRACTED_NAME" ]; then
+                    KERNEL_NAME="${EXTRACTED_NAME}.vxbin"
+                    log_info "  Using kernel name from metadata: $KERNEL_NAME"
+                fi
+            fi
+        fi
     fi
 
     # 2d: MLIR lowering → LLVM Dialect
