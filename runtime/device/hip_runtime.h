@@ -51,6 +51,21 @@
 #endif
 
 // ------------------------------------------------------------------
+// 2b. Vortex warpSize Override
+// Vortex has configurable threads per warp (default 4, not 32 like NVIDIA)
+// Override the warpSize from __clang_cuda_builtin_vars.h if VORTEX_WARP_SIZE is defined
+// ------------------------------------------------------------------
+#ifdef VORTEX_WARP_SIZE
+#ifdef __CUDA__
+// Override the clang warpSize constant with Vortex-specific value
+namespace {
+  __device__ const int __vortex_warp_size = VORTEX_WARP_SIZE;
+}
+#define warpSize __vortex_warp_size
+#endif
+#endif
+
+// ------------------------------------------------------------------
 // 3. Vector Types
 // HIP uses uint3/dim3 for indexing. __clang_cuda_builtin_vars.h
 // defines uint3, but we define dim3 here for kernel launch syntax.
