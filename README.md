@@ -25,9 +25,37 @@ cd vortex_hip
 git submodule update --init --recursive
 ```
 
+### Automated Setup (Recommended)
+
+For a fresh clone, use the automated setup script to build all dependencies:
+
+```bash
+./scripts/setup_dependencies.sh
+```
+
+This script builds all components in the correct order:
+1. Vortex (runtime + toolchain)
+2. Polygeist (HIP → MLIR compiler)
+3. llvm-vortex (LLVM IR → RISC-V compiler)
+4. HIP runtime library
+
+**Options:**
+```bash
+./scripts/setup_dependencies.sh --help           # Show all options
+./scripts/setup_dependencies.sh --skip-sudo      # Skip sudo commands (if already installed)
+./scripts/setup_dependencies.sh --force-vortex   # Force rebuild Vortex
+./scripts/setup_dependencies.sh --force-polygeist # Force rebuild Polygeist
+./scripts/setup_dependencies.sh --force-all      # Force rebuild everything
+```
+
+After setup completes, set up the environment:
+```bash
+source vortex/build/ci/toolchain_env.sh
+```
+
 ---
 
-## Build Instructions
+## Build Instructions (Manual)
 
 All build steps must be completed in order. Set `VORTEX_HIP_HOME` first:
 
