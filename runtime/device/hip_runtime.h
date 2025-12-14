@@ -129,3 +129,28 @@ extern "C" __device__ int printf(const char*, ...);
 // 8. Block Synchronization
 // ------------------------------------------------------------------
 extern "C" __device__ void __syncthreads(void);
+
+// ------------------------------------------------------------------
+// 9. Kernel Launch Macro (Device Compilation)
+// ------------------------------------------------------------------
+// When compiling with cgeist (device mode), hipLaunchKernelGGL expands
+// to <<<>>> syntax. This allows CGCall.cc to capture the EXACT arguments
+// being passed, making any transformations (pointer arithmetic, casts, etc.)
+// visible in the generated MLIR.
+//
+// Usage: hipLaunchKernelGGL(kernel, gridDim, blockDim, sharedMem, stream, args...)
+//
+// Example:
+//   hipLaunchKernelGGL(mykernel, dim3(N/256), dim3(256), 0, 0, ptr + offset, n * 2);
+// Expands to:
+//   mykernel<<<dim3(N/256), dim3(256), 0, 0>>>(ptr + offset, n * 2);
+//
+// The <<<>>> syntax triggers cgeist's CUDAKernelCallExpr handling, which:
+// 1. Creates gpu.launch with proper grid/block dims
+// 2. Captures the actual argument expressions (not just types)
+// 3. Attaches vortex.kernel_args metadata for marshalling
+//
+#ifdef __CUDA__
+#define hipLaunchKernelGGL(kernel, gridDim, blockDim, sharedMem, stream, ...) \
+    kernel<<<(gridDim), (blockDim), (sharedMem), (stream)>>>(__VA_ARGS__)
+#endif
