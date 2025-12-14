@@ -2,6 +2,17 @@
 """
 inject_kernel_launchers.py - Prepare HIP kernel source for Polygeist compilation
 
+╔════════════════════════════════════════════════════════════════════════════╗
+║  DEPRECATED: This script is superseded by the hipLaunchKernelGGL macro     ║
+║                                                                            ║
+║  The preferred approach is to use hipLaunchKernelGGL() in your HIP code,   ║
+║  which expands to <<<>>> syntax during device compilation with cgeist.     ║
+║                                                                            ║
+║  See: Polygeist/docs/EMIT_VORTEX_WRAPPERS.md                               ║
+║                                                                            ║
+║  This script remains for compatibility with existing workflows.            ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
 This script processes HIP source files to prepare them for device compilation
 through Polygeist. It performs two transformations:
 
