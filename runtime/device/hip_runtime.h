@@ -154,3 +154,41 @@ extern "C" __device__ void __syncthreads(void);
 #define hipLaunchKernelGGL(kernel, gridDim, blockDim, sharedMem, stream, ...) \
     kernel<<<(gridDim), (blockDim), (sharedMem), (stream)>>>(__VA_ARGS__)
 #endif
+
+// ------------------------------------------------------------------
+// 10. Host Runtime API Stubs (for --emit-host-functions mode)
+// ------------------------------------------------------------------
+// These declarations allow HIP source files to compile without #ifdef guards
+// when using cgeist --emit-host-functions. The actual implementations come
+// from the host runtime library (libhip_vortex.so).
+//
+// Functions declared here are host-only and will be marked with the
+// polygeist.host_only_func attribute by cgeist.
+
+// Memory copy direction enum
+typedef enum {
+    hipMemcpyHostToHost = 0,
+    hipMemcpyHostToDevice = 1,
+    hipMemcpyDeviceToHost = 2,
+    hipMemcpyDeviceToDevice = 3,
+    hipMemcpyDefault = 4
+} hipMemcpyKind;
+
+// Memory management
+__host__ hipError_t hipMalloc(void** ptr, size_t size);
+__host__ hipError_t hipFree(void* ptr);
+__host__ hipError_t hipMemcpy(void* dst, const void* src, size_t count, hipMemcpyKind kind);
+__host__ hipError_t hipMemset(void* ptr, int value, size_t count);
+
+// Device synchronization
+__host__ hipError_t hipDeviceSynchronize(void);
+
+// Error handling
+__host__ const char* hipGetErrorString(hipError_t error);
+__host__ hipError_t hipGetLastError(void);
+__host__ hipError_t hipPeekAtLastError(void);
+
+// Device management
+__host__ hipError_t hipSetDevice(int deviceId);
+__host__ hipError_t hipGetDevice(int* deviceId);
+__host__ hipError_t hipGetDeviceCount(int* count);
