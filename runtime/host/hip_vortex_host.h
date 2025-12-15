@@ -26,19 +26,6 @@
 #include "kernel_stubs.h"
 #endif
 
-//=============================================================================
-// Helper macros for HIP code compatibility
-//=============================================================================
-
-// Host-side dim3 definition (matches device-side definition)
-#ifndef __CUDA__
-struct dim3 {
-    unsigned int x, y, z;
-    dim3(unsigned int vx = 1, unsigned int vy = 1, unsigned int vz = 1)
-        : x(vx), y(vy), z(vz) {}
-};
-#endif
-
 // hipLaunchKernelGGL macro for host compilation
 // In host mode, this should be replaced with the generated launcher function
 // Example: hipLaunchKernelGGL(vecadd_kernel, grid, block, 0, 0, a, b, c, n)
