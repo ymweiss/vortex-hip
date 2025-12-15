@@ -207,6 +207,7 @@ compile_device_mlir() {
         -resource-dir="$RESOURCE_DIR" \
         -I"$HIP_DEVICE_INCLUDE" \
         -I"$REPO_ROOT" \
+        --emit-host-functions \
         --function='*' \
         --output-intermediate-gpu=1 \
         -S \
@@ -548,43 +549,34 @@ link_host_executable() {
 compile_host() {
     log_info "Stage 5: Host compilation"
 
-    # Find generated stub files
+    # Find generated stub files (for metadata)
     STUB_FILES=$(ls "$WORK_DIR"/*_args.h 2>/dev/null | tr '\n' ' ')
 
     if [ -z "$STUB_FILES" ]; then
-        log_error "No host stubs found. Run device compilation first."
-        exit 1
+        log_warn "No host stubs found - kernel launch may not work"
     fi
 
-    # Create host source wrapper if needed
-    # The source needs to include hip_vortex_host.h and the generated stubs
-    HOST_WRAPPER="/tmp/${BASENAME}_host_$$.cpp"
-
-    cat > "$HOST_WRAPPER" << 'HOSTWRAP'
-// Auto-generated host wrapper
-#define HIP_HOST_COMPILATION 1
-#include "hip_vortex_host.h"
-HOSTWRAP
-
-    # Include all generated stubs
-    for stub in $STUB_FILES; do
-        echo "#include \"$(basename $stub)\"" >> "$HOST_WRAPPER"
-    done
-
-    # Include the original source (for non-kernel code)
-    echo "#include \"$(basename $INPUT_FILE)\"" >> "$HOST_WRAPPER"
-
+    # Guard-free compilation: compile the original HIP source directly
+    # The host hip_runtime.h provides kernel attribute no-ops and built-in stubs
+    # Include paths:
+    #   - HIP_HOST_INCLUDE/hip: hip_runtime.h with host-side definitions
+    #   - HIP_HOST_INCLUDE: hip_vortex_runtime.h
+    #   - WORK_DIR: generated *_args.h stubs
     run_cmd g++ -std=c++17 \
+        -D__HIP_PLATFORM_VORTEX__ \
+        -DHIP_HOST_COMPILATION=1 \
+        -I"$HIP_HOST_INCLUDE/hip" \
         -I"$HIP_HOST_INCLUDE" \
         -I"$WORK_DIR" \
         -I"$REPO_ROOT" \
+        -x c++ \
+        "$INPUT_FILE" \
         -L"$HIP_RUNTIME_LIB" \
         -L"$VORTEX_HOME/build/runtime" \
-        "$HOST_WRAPPER" \
-        -lhip_vortex -lvortex \
+        -Wl,-rpath,"$HIP_RUNTIME_LIB" \
+        -Wl,-rpath,"$VORTEX_HOME/build/runtime" \
+        -lhip_vortex \
         -o "$WORK_DIR/$OUTPUT" 2>&1
-
-    rm -f "$HOST_WRAPPER"
 
     if [ -f "$WORK_DIR/$OUTPUT" ]; then
         log_success "Host executable: $WORK_DIR/$OUTPUT"

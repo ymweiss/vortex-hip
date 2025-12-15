@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
+#include <tuple>  // Required for hipLaunchKernelGGL macro
 extern "C" {
 #endif
 
