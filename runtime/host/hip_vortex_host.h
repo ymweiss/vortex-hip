@@ -48,6 +48,9 @@ struct dim3 {
 // 1. Include the generated kernel_stubs.h
 // 2. Use the launcher function: launch_<kernel_name>(grid, block, args...)
 #ifndef __CUDA__
+// Override the legacy macro from hip_vortex_runtime.h with an error
+// The generated launcher functions should be used instead
+#undef hipLaunchKernelGGL
 #define hipLaunchKernelGGL(kernel, grid, block, sharedMem, stream, ...) \
     _Pragma("GCC error \"hipLaunchKernelGGL not supported on host. Use launch_<kernel_name>() from kernel_stubs.h instead.\"")
 #endif

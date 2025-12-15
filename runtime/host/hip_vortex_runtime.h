@@ -306,11 +306,18 @@ hipError_t vortexLaunchKernel(
 );
 
 //=============================================================================
-// hipLaunchKernelGGL - C++ Template-based Kernel Launch
+// hipLaunchKernelGGL - C++ Template-based Kernel Launch (LEGACY)
 //=============================================================================
 
 /**
  * Standard HIP kernel launch macro
+ *
+ * DEPRECATED: This macro lacks proper argument metadata for pointer conversion.
+ * Use the generated launcher functions from kernel_stubs.h instead:
+ *   - launch_<kernel_name>(gridDim, blockDim, args...)
+ *
+ * For the new approach, include hip_vortex_host.h and the generated stubs.
+ * See: Polygeist/docs/EMIT_VORTEX_WRAPPERS.md
  *
  * Usage: hipLaunchKernelGGL(kernel, gridDim, blockDim, sharedMem, stream, args...)
  *
