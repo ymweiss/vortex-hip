@@ -1,15 +1,16 @@
 // vecadd_v2.hip - Vector addition using hipLaunchKernelGGL approach
 //
-// This example demonstrates the new HIP-to-Vortex compilation workflow
-// that uses hipLaunchKernelGGL instead of the <<< >>> syntax.
+// This example demonstrates the HIP-to-Vortex compilation workflow
+// using hipLaunchKernelGGL for kernel launches.
 //
 // Compile with:
 //   ./scripts/compile_hip_v2.sh hip_tests/vecadd_v2.hip -o vecadd_v2
 //
 
-#ifdef __CUDA__
-// Device compilation (cgeist)
-#include "hip_runtime.h"
+// Include HIP runtime - works for both device (cgeist) and host (g++) compilation
+#include <hip/hip_runtime.h>
+#include <cstdio>
+#include <cstdlib>
 
 // Kernel function - performs element-wise vector addition
 __global__ void vecadd_kernel(const float* a, const float* b, float* c, int n) {
@@ -19,27 +20,13 @@ __global__ void vecadd_kernel(const float* a, const float* b, float* c, int n) {
     }
 }
 
-// Host wrapper that calls the kernel via hipLaunchKernelGGL
-// cgeist compiles this to gpu.launch_func, which the MLIR pass converts to runtime calls
+// Launch wrapper using hipLaunchKernelGGL
 void launch_vecadd(const float* d_a, const float* d_b, float* d_c, int n, int block_size) {
     int num_blocks = (n + block_size - 1) / block_size;
     dim3 grid(num_blocks);
     dim3 block(block_size);
     hipLaunchKernelGGL(vecadd_kernel, grid, block, 0, 0, d_a, d_b, d_c, n);
 }
-
-#else
-// Host compilation - kernel and launch wrapper come from MLIR-generated object
-#include "hip_vortex_host.h"
-#include <cstdio>
-#include <cstdlib>
-
-// Declaration for MLIR-generated launch wrapper (linked from MLIR-generated object)
-void launch_vecadd(const float* d_a, const float* d_b, float* d_c, int n, int block_size);
-#endif
-
-#ifndef __CUDA__
-// Host-only code (not compiled by cgeist)
 
 int main(int argc, char** argv) {
     const int N = 1024;
@@ -94,8 +81,7 @@ int main(int argc, char** argv) {
     printf("Launching kernel with %d blocks of %d threads...\n",
            (N + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE);
 
-    // Launch kernel via the MLIR-generated wrapper
-    // This calls launch_vecadd() which is linked from vecadd_v2_launch.o
+    // Launch kernel
     launch_vecadd(d_a, d_b, d_c, N, BLOCK_SIZE);
 
     // Synchronize
@@ -132,5 +118,3 @@ int main(int argc, char** argv) {
 
     return errors > 0 ? 1 : 0;
 }
-
-#endif // __CUDA__

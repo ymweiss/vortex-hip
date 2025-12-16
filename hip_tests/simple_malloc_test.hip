@@ -10,7 +10,11 @@
 //       -resource-dir $(clang -print-resource-dir) \
 //       -S -o simple_malloc_test.mlir
 
+#ifdef __CUDA__
+#include "hip_runtime.h"
+#else
 #include <hip/hip_runtime.h>
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -56,7 +60,7 @@ int main() {
     // Converts to gpu.launch_func in MLIR
     dim3 gridDim(1, 1, 1);
     dim3 blockDim(256, 1, 1);
-    vector_add<<<gridDim, blockDim>>>(d_a, d_b, d_c, N);
+    hipLaunchKernelGGL(vector_add, gridDim, blockDim, 0, 0, d_a, d_b, d_c, N);
 
     // Synchronize
     // After preprocessing, this becomes:

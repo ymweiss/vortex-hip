@@ -138,8 +138,11 @@ int main(int argc, char *argv[]) {
   uint32_t buf_size_B = size_B * sizeof(ITYPE);
   uint32_t buf_size_C = size_C * sizeof(OTYPE);
 
-  std::cout << "Input data type: " << typeid(ITYPE).name() << std::endl;
-  std::cout << "Output data type: " << typeid(OTYPE).name() << std::endl;
+// Use macro stringification instead of typeid (avoids <typeinfo> dependency)
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+  std::cout << "Input data type: " << TOSTRING(ITYPE) << std::endl;
+  std::cout << "Output data type: " << TOSTRING(OTYPE) << std::endl;
   std::cout << "Tile Dimension: M=" << TILE_M << ", N=" << TILE_N << ", K=" << TILE_K << std::endl;
   std::cout << "Matrix A: " << M << "x" << K << std::endl;
   std::cout << "Matrix B: " << K << "x" << N << std::endl;
