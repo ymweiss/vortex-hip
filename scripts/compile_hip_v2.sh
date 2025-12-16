@@ -56,9 +56,12 @@ CLANG_VORTEX="$LLVM_VORTEX/bin/clang"
 VXBIN_PY="$VORTEX_HOME/kernel/scripts/vxbin.py"
 
 RESOURCE_DIR="$REPO_ROOT/Polygeist/llvm-project/build/lib/clang/18"
+LIBCXX_INCLUDE="$REPO_ROOT/Polygeist/llvm-project/libcxx/include"
 HIP_DEVICE_INCLUDE="$REPO_ROOT/runtime/device"
 HIP_HOST_INCLUDE="$REPO_ROOT/runtime/host"
 HIP_RUNTIME_LIB="$REPO_ROOT/runtime/build"
+# Device stub headers intercept problematic STL headers during device compilation
+DEVICE_STUBS_INCLUDE="$POLYGEIST_BUILD/include/polygeist_device_stubs"
 
 # Default options
 OUTPUT=""
@@ -165,6 +168,14 @@ log_info "Checking tools..."
 check_tool "$CGEIST" "cgeist"
 check_tool "$POLYGEIST_OPT" "polygeist-opt"
 
+# Check if libc++ is available (required for -stdlib=libc++ flag)
+CLANG_PP="$POLYGEIST_LLVM/bin/clang++"
+if [ -f "$CLANG_PP" ]; then
+    if ! "$CLANG_PP" -stdlib=libc++ -x c++ -E - < /dev/null > /dev/null 2>&1; then
+        log_warn "libc++ may not be available. Install with: apt install libc++-dev libc++abi-dev"
+    fi
+fi
+
 # Temp files
 TEMP_CU="/tmp/${BASENAME}_$$.cu"
 GPU_MLIR="/tmp/${BASENAME}_$$.gpu.mlir"
@@ -197,6 +208,9 @@ compile_device_mlir() {
         CGEIST_INPUT="$INPUT_FILE"
     fi
 
+    # NOTE: --emit-host-functions with -stdlib=libc++ requires Polygeist support
+    # for modern C++ constructs (nullptr, etc.). Currently disabled pending fixes.
+    # For now, compile device code only (host code compiled separately by g++).
     run_cmd "$CGEIST" "$CGEIST_INPUT" \
         --cuda-lower \
         --emit-cuda \
@@ -205,9 +219,9 @@ compile_device_mlir() {
         --cuda-gpu-arch=sm_60 \
         -nocudalib -nocudainc \
         -resource-dir="$RESOURCE_DIR" \
+        -I"$DEVICE_STUBS_INCLUDE" \
         -I"$HIP_DEVICE_INCLUDE" \
         -I"$REPO_ROOT" \
-        --emit-host-functions \
         --function='*' \
         --output-intermediate-gpu=1 \
         -S \
@@ -235,8 +249,10 @@ convert_to_vortex() {
     # Change to work directory so stubs are generated there
     pushd "$WORK_DIR" > /dev/null
 
+    # Strip host-only functions before lowering to device code
     run_cmd "$POLYGEIST_OPT" "$GPU_MLIR" \
         --convert-gpu-to-vortex \
+        --strip-host-only-functions \
         -o "$VORTEX_MLIR" 2>&1
 
     popd > /dev/null

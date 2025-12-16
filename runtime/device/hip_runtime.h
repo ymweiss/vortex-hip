@@ -51,6 +51,13 @@
 #endif
 
 // ------------------------------------------------------------------
+// 2a. Device-side malloc/free declarations (for cuda_wrappers/new)
+// Must be declared after __device__ is defined
+// ------------------------------------------------------------------
+extern "C" __device__ void* malloc(size_t size);
+extern "C" __device__ void free(void* ptr);
+
+// ------------------------------------------------------------------
 // 2b. Vortex warpSize Override
 // Vortex has configurable threads per warp (default 4, not 32 like NVIDIA)
 // Override the warpSize from __clang_cuda_builtin_vars.h if VORTEX_WARP_SIZE is defined
@@ -121,9 +128,14 @@ typedef int cudaError_t;
 #define cudaSuccess 0
 
 // ------------------------------------------------------------------
-// 7. Device-side printf support
+// 7. printf support
+// Vortex provides device printf implementation.
+// printf must be callable from both host and device code.
+// Using __host__ __device__ allows Clang to handle overload resolution
+// correctly during CUDA compilation (both host and device jobs parse
+// all code, so both contexts need a valid printf).
 // ------------------------------------------------------------------
-extern "C" __device__ int printf(const char*, ...);
+extern "C" __host__ __device__ int printf(const char*, ...);
 
 // ------------------------------------------------------------------
 // 8. Block Synchronization
@@ -174,11 +186,17 @@ typedef enum {
     hipMemcpyDefault = 4
 } hipMemcpyKind;
 
-// Memory management
-__host__ hipError_t hipMalloc(void** ptr, size_t size);
+// Memory management (internal implementation)
+__host__ hipError_t __hipMalloc_impl(void** ptr, size_t size);
 __host__ hipError_t hipFree(void* ptr);
 __host__ hipError_t hipMemcpy(void* dst, const void* src, size_t count, hipMemcpyKind kind);
 __host__ hipError_t hipMemset(void* ptr, int value, size_t count);
+
+// Template wrapper for hipMalloc to accept any pointer type
+template <typename T>
+__host__ inline hipError_t hipMalloc(T** ptr, size_t size) {
+    return __hipMalloc_impl(reinterpret_cast<void**>(ptr), size);
+}
 
 // Device synchronization
 __host__ hipError_t hipDeviceSynchronize(void);
@@ -192,3 +210,21 @@ __host__ hipError_t hipPeekAtLastError(void);
 __host__ hipError_t hipSetDevice(int deviceId);
 __host__ hipError_t hipGetDevice(int* deviceId);
 __host__ hipError_t hipGetDeviceCount(int* count);
+
+// Device properties (simplified struct for compilation)
+typedef struct {
+    char name[256];
+    size_t totalGlobalMem;
+    size_t sharedMemPerBlock;
+    int regsPerBlock;
+    int warpSize;
+    int maxThreadsPerBlock;
+    int maxThreadsDim[3];
+    int maxGridSize[3];
+    int clockRate;
+    int multiProcessorCount;
+    int major;
+    int minor;
+} hipDeviceProp_t;
+
+__host__ hipError_t hipGetDeviceProperties(hipDeviceProp_t* prop, int deviceId);
