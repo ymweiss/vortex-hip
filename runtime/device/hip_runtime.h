@@ -142,6 +142,47 @@ extern "C" __host__ __device__ int printf(const char*, ...);
 // ------------------------------------------------------------------
 extern "C" __device__ void __syncthreads(void);
 
+// Memory fence intrinsics
+// These ensure memory operations are visible across threads/blocks
+// Implemented as inline no-ops for Vortex (can add fence.rw if needed later)
+__device__ inline void __threadfence(void) {}
+__device__ inline void __threadfence_block(void) {}
+__device__ inline void __threadfence_system(void) {}
+
+// ------------------------------------------------------------------
+// 8a. Device Math Functions
+// These provide device-side math operations for CUDA/HIP kernels.
+// ------------------------------------------------------------------
+
+// Integer min/max
+__device__ inline int min(int a, int b) { return a < b ? a : b; }
+__device__ inline int max(int a, int b) { return a > b ? a : b; }
+__device__ inline unsigned int min(unsigned int a, unsigned int b) { return a < b ? a : b; }
+__device__ inline unsigned int max(unsigned int a, unsigned int b) { return a > b ? a : b; }
+__device__ inline long min(long a, long b) { return a < b ? a : b; }
+__device__ inline long max(long a, long b) { return a > b ? a : b; }
+__device__ inline unsigned long min(unsigned long a, unsigned long b) { return a < b ? a : b; }
+__device__ inline unsigned long max(unsigned long a, unsigned long b) { return a > b ? a : b; }
+__device__ inline long long min(long long a, long long b) { return a < b ? a : b; }
+__device__ inline long long max(long long a, long long b) { return a > b ? a : b; }
+
+// Float min/max
+__device__ inline float fminf(float a, float b) { return a < b ? a : b; }
+__device__ inline float fmaxf(float a, float b) { return a > b ? a : b; }
+
+// Float math functions (declarations - implemented by libgcc/compiler-rt)
+extern "C" __device__ float sqrtf(float x);
+extern "C" __device__ float sinf(float x);
+extern "C" __device__ float cosf(float x);
+extern "C" __device__ float tanf(float x);
+extern "C" __device__ float expf(float x);
+extern "C" __device__ float logf(float x);
+extern "C" __device__ float powf(float base, float exp);
+extern "C" __device__ float fabsf(float x);
+extern "C" __device__ float floorf(float x);
+extern "C" __device__ float ceilf(float x);
+extern "C" __device__ float roundf(float x);
+
 // ------------------------------------------------------------------
 // 9. Kernel Launch Macro (Device Compilation)
 // ------------------------------------------------------------------

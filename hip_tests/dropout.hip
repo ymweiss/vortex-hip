@@ -29,7 +29,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 // Random number generation functions (from common.h)
-__device__ unsigned int WangHash(unsigned int s) {
+// Use __host__ __device__ so they can be called from both device kernel and host verification
+__host__ __device__ unsigned int WangHash(unsigned int s) {
   s = (s ^ 61) ^ (s >> 16);
   s *= 9;
   s = s ^ (s >> 4);
@@ -38,14 +39,14 @@ __device__ unsigned int WangHash(unsigned int s) {
   return s;
 }
 
-__device__ unsigned int RandomInt(unsigned int s) {
+__host__ __device__ unsigned int RandomInt(unsigned int s) {
   s ^= s << 13;
   s ^= s >> 17;
   s ^= s << 5;
   return s;
 }
 
-__device__ float RandomFloat(unsigned int s) {
+__host__ __device__ float RandomFloat(unsigned int s) {
   return RandomInt(s) * 2.3283064365387e-10f;
 }
 

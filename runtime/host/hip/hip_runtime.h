@@ -32,11 +32,19 @@
 #endif
 
 #ifndef __shared__
-#define __shared__ static
+// Use weak attribute to allow extern __shared__ without linker errors:
+//   __shared__ TYPE var;           -> __attribute__((weak)) TYPE var;
+//   extern __shared__ TYPE arr[];  -> extern __attribute__((weak)) TYPE arr[];
+// Host kernel code is never executed (replaced by MLIR-generated wrappers)
+#define __shared__ __attribute__((weak))
 #endif
 
 #ifndef __constant__
 #define __constant__ const
+#endif
+
+#ifndef __noinline__
+#define __noinline__
 #endif
 
 //=============================================================================
@@ -65,5 +73,39 @@ namespace {
 }
 
 #endif // __HIP_HOST_BUILTIN_VARS__
+
+//=============================================================================
+// GPU Synchronization (Host-side no-ops)
+//=============================================================================
+// Kernel code compiles but won't execute on host - these are just stubs
+
+#ifndef __syncthreads
+#define __syncthreads() ((void)0)
+#endif
+
+#ifndef __threadfence
+#define __threadfence() ((void)0)
+#endif
+
+#ifndef __threadfence_block
+#define __threadfence_block() ((void)0)
+#endif
+
+#ifndef __threadfence_system
+#define __threadfence_system() ((void)0)
+#endif
+
+//=============================================================================
+// Device Math Function Stubs (Host-side)
+//=============================================================================
+// These allow kernel code to compile on host (though it won't execute)
+
+template<typename T>
+inline T min(T a, T b) { return a < b ? a : b; }
+template<typename T>
+inline T max(T a, T b) { return a > b ? a : b; }
+
+// Math functions (sqrtf, sinf, cosf, fminf, fmaxf, etc.)
+// are provided by system <cmath> header - don't redeclare here
 
 #endif // HIP_RUNTIME_HOST_H
