@@ -195,10 +195,10 @@ cleanup() {
 trap cleanup EXIT
 
 #==============================================================================
-# Stage 1: HIP → GPU dialect MLIR
+# Stage 1: HIP Source Transformation + GPU MLIR Generation
 #==============================================================================
 compile_device_mlir() {
-    log_info "Stage 1: HIP → GPU dialect MLIR"
+    log_info "Stage 1: HIP source transformation + GPU MLIR"
 
     # Copy to .cu for cgeist (it prefers .cu extension)
     if [[ "$INPUT_FILE" == *.hip ]]; then
@@ -208,10 +208,39 @@ compile_device_mlir() {
         CGEIST_INPUT="$INPUT_FILE"
     fi
 
-    # NOTE: --emit-host-functions with -stdlib=libc++ requires Polygeist support
-    # for modern C++ constructs (nullptr, etc.). Currently disabled pending fixes.
-    # For now, compile device code only (host code compiled separately by g++).
+    # Stage 1a: Transform HIP source to insert kernel wrappers
+    # This ensures kernel arguments maintain correct order during MLIR codegen
+    TRANSFORMED_CU="/tmp/${BASENAME}_transformed_$$.cu"
+    log_info "  Transforming HIP source (inserting kernel wrappers)..."
     run_cmd "$CGEIST" "$CGEIST_INPUT" \
+        --transform-hip-source \
+        --transform-only \
+        --transform-output="$TRANSFORMED_CU" \
+        --cuda-lower \
+        --emit-cuda \
+        --cuda-gpu-arch=sm_60 \
+        -nocudalib -nocudainc \
+        -resource-dir="$RESOURCE_DIR" \
+        -I"$DEVICE_STUBS_INCLUDE" \
+        -I"$HIP_DEVICE_INCLUDE" \
+        -I"$REPO_ROOT" \
+        --function='*' \
+        -S 2>&1
+
+    if [ ! -f "$TRANSFORMED_CU" ]; then
+        log_warn "Source transformation failed - using original source"
+        TRANSFORMED_CU="$CGEIST_INPUT"
+    else
+        log_success "Source transformed (wrappers inserted)"
+        if [ "$KEEP_TEMPS" -eq 1 ]; then
+            cp "$TRANSFORMED_CU" "$WORK_DIR/${BASENAME}_transformed.cu"
+            log_info "  Kept: $WORK_DIR/${BASENAME}_transformed.cu"
+        fi
+    fi
+
+    # Stage 1b: Compile transformed source to GPU MLIR
+    log_info "  Compiling to GPU dialect MLIR..."
+    run_cmd "$CGEIST" "$TRANSFORMED_CU" \
         --cuda-lower \
         --emit-cuda \
         --use-original-gpu-block-size \
@@ -224,15 +253,21 @@ compile_device_mlir() {
         -I"$REPO_ROOT" \
         --function='*' \
         --output-intermediate-gpu=1 \
+        --dump-hip-kernels \
         -S \
         -o "$GPU_MLIR" 2>&1
+
+    # Cleanup transformed source if not keeping temps
+    if [ "$KEEP_TEMPS" -eq 0 ] && [ "$TRANSFORMED_CU" != "$CGEIST_INPUT" ]; then
+        rm -f "$TRANSFORMED_CU"
+    fi
 
     if [ ! -f "$GPU_MLIR" ]; then
         log_error "cgeist failed to generate GPU MLIR"
         exit 1
     fi
 
-    # Verify gpu.launch was generated (from hipLaunchKernelGGL)
+    # Verify gpu.launch was generated (from wrapper calls)
     if grep -q "gpu.launch\|gpu.launch_func" "$GPU_MLIR"; then
         log_success "GPU launch operations found"
     else
