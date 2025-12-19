@@ -188,13 +188,92 @@ number of points: 16
 PASSED!
 ```
 
+## Additional Fixes (December 2024)
+
+### Problem: Kernel Naming and Argument Order Mismatch
+
+After kernel outlining, the gpu.func was named `main_kernel` (from the parent function) instead of the original `vecadd_kernel`. The ReorderGPUKernelArgsPass couldn't match the kernel to the wrapper, and the host stub expected a different kernel name than the compiled binary.
+
+### Solution: Multi-Level Fixes
+
+#### 1. ReorderGPUKernelArgs - Match by Arg Count
+**File:** `Polygeist/lib/polygeist/Passes/ReorderGPUKernelArgs.cpp`
+
+When exact name matching fails, try matching by argument count:
+```cpp
+// 3. If still no match, try matching by arg count
+if (it == kernelArgIsPointer.end()) {
+  for (auto &entry : kernelArgIsPointer) {
+    if (entry.second.size() == numGpuUserArgs) {
+      it = kernelArgIsPointer.find(entry.first());
+      break;
+    }
+  }
+}
+```
+
+Also set `vortex.kernel_name` attribute to propagate original kernel name:
+```cpp
+gpuFunc->setAttr("vortex.kernel_name",
+                StringAttr::get(ctx, originalKernelName));
+```
+
+#### 2. ConvertGPUToVortex - Use vortex.kernel_name
+**File:** `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp`
+
+Use the `vortex.kernel_name` attribute for metadata file naming:
+```cpp
+if (auto kernelNameAttr = funcOp->getAttrOfType<StringAttr>("vortex.kernel_name")) {
+  meta.kernelName = kernelNameAttr.getValue().str();
+} else {
+  meta.kernelName = extractBaseKernelName(funcOp.getName()).str();
+}
+```
+
+#### 3. HIPSourceTransform - Conditional Wrapper
+**File:** `Polygeist/tools/cgeist/Lib/HIPSourceTransform.cc`
+
+Generate conditional wrapper that calls stub on host:
+```cpp
+os << "#ifdef HIP_HOST_COMPILATION\n";
+os << "void " << wrapperName << "(" << params << ") {\n";
+os << "    " << stubName << "(__grid, __block, " << args << ");\n";
+os << "}\n";
+os << "#else\n";
+os << "void " << wrapperName << "(" << params << ") {\n";
+os << "    " << kernel.demangledName << "<<<__grid, __block>>>(" << args << ");\n";
+os << "}\n";
+os << "#endif\n";
+```
+
+#### 4. compile_hip_v2.sh - Use Transformed Source
+**File:** `scripts/compile_hip_v2.sh`
+
+Use the transformed source for host compilation:
+```bash
+HOST_SOURCE="$WORK_DIR/${BASENAME}_transformed.cu"
+cp "$TRANSFORMED_CU" "$HOST_SOURCE"
+# ...
+COMPILE_SOURCE="${HOST_SOURCE:-$INPUT_FILE}"
+```
+
+### Result
+
+The end-to-end pipeline now correctly:
+1. Preserves kernel argument order (ptr, ptr, ptr, scalar)
+2. Names kernel binary to match host stub expectations
+3. Marshals host pointers to device addresses via metadata
+
 ## Files Modified
 
 | File | Change |
 |------|--------|
 | `Polygeist/lib/polygeist/Passes/GenerateVortexMain.cpp` | Derive arg0/arg1 from block_dim[0] |
-| `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp` | Skip leading block_dim args in metadata |
+| `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp` | Skip leading block_dim args; use vortex.kernel_name |
+| `Polygeist/lib/polygeist/Passes/ReorderGPUKernelArgs.cpp` | Match by arg count; set vortex.kernel_name |
+| `Polygeist/tools/cgeist/Lib/HIPSourceTransform.cc` | Conditional wrapper generation |
 | `runtime/hip_vortex_runtime/include/hip_vortex_runtime.h` | Add VortexKernelArgMeta, vortexLaunchKernel |
 | `runtime/hip_vortex_runtime/src/hip_kernel.cpp` | Handle host/device offset mapping |
+| `scripts/compile_hip_v2.sh` | Use transformed source for host |
 | `scripts/generate_host_stubs.py` | Compute host struct offsets for 64-bit |
 | `scripts/polygeist/inject_kernel_launchers.py` | Include kernel_stubs.h |
