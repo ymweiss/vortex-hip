@@ -210,12 +210,14 @@ compile_device_mlir() {
 
     # Stage 1a: Transform HIP source to insert kernel wrappers
     # This ensures kernel arguments maintain correct order during MLIR codegen
+    # Also generates _args.h stub headers with correct argument order from AST
     TRANSFORMED_CU="/tmp/${BASENAME}_transformed_$$.cu"
     log_info "  Transforming HIP source (inserting kernel wrappers)..."
     run_cmd "$CGEIST" "$CGEIST_INPUT" \
         --transform-hip-source \
         --transform-only \
         --transform-output="$TRANSFORMED_CU" \
+        --stub-output-dir="$WORK_DIR" \
         --cuda-lower \
         --emit-cuda \
         --cuda-gpu-arch=sm_60 \
@@ -257,9 +259,17 @@ compile_device_mlir() {
         -S \
         -o "$GPU_MLIR" 2>&1
 
-    # Cleanup transformed source if not keeping temps
-    if [ "$KEEP_TEMPS" -eq 0 ] && [ "$TRANSFORMED_CU" != "$CGEIST_INPUT" ]; then
-        rm -f "$TRANSFORMED_CU"
+    # Save transformed source for host compilation (always needed)
+    # The transformed source has the conditional wrapper that calls the generated stub
+    if [ "$TRANSFORMED_CU" != "$CGEIST_INPUT" ]; then
+        HOST_SOURCE="$WORK_DIR/${BASENAME}_transformed.cu"
+        cp "$TRANSFORMED_CU" "$HOST_SOURCE"
+        # Cleanup original temp file unless keeping temps
+        if [ "$KEEP_TEMPS" -eq 0 ]; then
+            rm -f "$TRANSFORMED_CU"
+        fi
+    else
+        HOST_SOURCE="$CGEIST_INPUT"
     fi
 
     if [ ! -f "$GPU_MLIR" ]; then
@@ -600,6 +610,10 @@ link_host_executable() {
 compile_host() {
     log_info "Stage 5: Host compilation"
 
+    # Use transformed source if available (has conditional wrapper for host/device)
+    # HOST_SOURCE is set by compile_device_mlir
+    COMPILE_SOURCE="${HOST_SOURCE:-$INPUT_FILE}"
+
     # Find generated stub files (for metadata)
     STUB_FILES=$(ls "$WORK_DIR"/*_args.h 2>/dev/null | tr '\n' ' ')
 
@@ -607,8 +621,9 @@ compile_host() {
         log_warn "No host stubs found - kernel launch may not work"
     fi
 
-    # Guard-free compilation: compile the original HIP source directly
-    # The host hip_runtime.h provides kernel attribute no-ops and built-in stubs
+    # Compile transformed source with HIP_HOST_COMPILATION defined
+    # This causes the wrapper to call the generated stub (vortexLaunchKernel)
+    # instead of using <<<>>> syntax
     # Include paths:
     #   - HIP_HOST_INCLUDE/hip: hip_runtime.h with host-side definitions
     #   - HIP_HOST_INCLUDE: hip_vortex_runtime.h
@@ -621,7 +636,7 @@ compile_host() {
         -I"$WORK_DIR" \
         -I"$REPO_ROOT" \
         -x c++ \
-        "$INPUT_FILE" \
+        "$COMPILE_SOURCE" \
         -L"$HIP_RUNTIME_LIB" \
         -L"$VORTEX_HOME/build/runtime" \
         -Wl,-rpath,"$HIP_RUNTIME_LIB" \
