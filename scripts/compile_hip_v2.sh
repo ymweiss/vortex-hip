@@ -245,7 +245,6 @@ compile_device_mlir() {
     run_cmd "$CGEIST" "$TRANSFORMED_CU" \
         --cuda-lower \
         --emit-cuda \
-        --use-original-gpu-block-size \
         --vortex-single-kernel \
         --cuda-gpu-arch=sm_60 \
         -nocudalib -nocudainc \
@@ -389,12 +388,23 @@ compile_kernel_binary() {
     RISCV_TOOLCHAIN="${RISCV_TOOLCHAIN:-$HOME/tools/riscv32-gnu-toolchain}"
 
     # Extract kernel name from generated metadata
-    META_FILE=$(ls "$WORK_DIR"/*.meta.json 2>/dev/null | head -1)
+    # Prefer metadata file matching the input source basename
+    # This handles the case where multiple .meta.json files exist from previous runs
+    META_FILE=""
+    if [ -f "$WORK_DIR/${BASENAME}_kernel.meta.json" ]; then
+        META_FILE="$WORK_DIR/${BASENAME}_kernel.meta.json"
+    else
+        # Fall back to first available meta file
+        META_FILE=$(ls "$WORK_DIR"/*.meta.json 2>/dev/null | head -1)
+    fi
+
     if [ -n "$META_FILE" ] && [ -f "$META_FILE" ]; then
         KERNEL_BASE=$(basename "$META_FILE" .meta.json)
         VXBIN_NAME="${KERNEL_NAME:-${KERNEL_BASE}.vxbin}"
+        log_info "  Using metadata: $(basename "$META_FILE")"
     else
         VXBIN_NAME="${KERNEL_NAME:-${BASENAME}_kernel.vxbin}"
+        log_warn "  No metadata found, using default kernel name"
     fi
 
     KERNEL_OBJ="/tmp/${BASENAME}_$$.o"
