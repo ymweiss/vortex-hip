@@ -188,7 +188,7 @@ number of points: 16
 PASSED!
 ```
 
-## Additional Fixes (December 2024)
+## Additional Fixes (December 2025)
 
 ### Problem: Kernel Naming and Argument Order Mismatch
 
