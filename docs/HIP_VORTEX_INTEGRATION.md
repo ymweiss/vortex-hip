@@ -673,9 +673,14 @@ Tests should be verified in order from least complex to most complex. This allow
 
 | Priority | Test | Lines | Kernels | Features | Notes |
 |----------|------|-------|---------|----------|-------|
-| 1 | `dropout.hip` | ~80 | 1 | Random/conditional | Dropout layer |
-| 2 | `diverge.hip` | ~50 | 1 | Branch divergence | Thread divergence handling |
-| 3 | `mstress.hip` | ~100 | 1 | Memory stress | Many memory accesses |
+| 1 | `mstress.hip` | ~100 | 1 | Memory stress | Many memory accesses |
+
+#### Known Issues
+
+| Test | Issue | Root Cause |
+|------|-------|------------|
+| `dropout.hip` | Kernel crashes during execution | f32→f64→f32 conversion may not be supported |
+| `diverge.hip` | Kernel crashes during execution | Constant folding removes `samples` arg (4→3 args) but host sends 4 |
 
 #### Tier 2: Medium Complexity (Multiple Operations)
 
