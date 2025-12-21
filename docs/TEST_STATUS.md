@@ -2,7 +2,7 @@
 
 This document tracks the status of HIP test cases.
 
-**Last Updated:** 2025-12-16
+**Last Updated:** 2025-12-21
 
 ## Test Results Summary
 
@@ -14,12 +14,12 @@ Using `compile_hip_v2.sh` pipeline:
 | conv3.hip | **PASS** | 2D convolution |
 | cta.hip | **PASS** | 3D grid/block |
 | demo.hip | **PASS** | Simple kernel |
-| diverge.hip | **PASS** | Thread divergence |
+| diverge.hip | **PASS** | Thread divergence (constant args folded) |
 | dogfood.hip | **PASS** | Arithmetic operations |
 | dotproduct.hip | **PASS** | Shared memory reduction |
 | dropout.hip | **PASS** | Neural network dropout |
 | fence.hip | **PASS** | Memory fence operations |
-| io_addr.hip | **PASS** | Pointer arithmetic |
+| io_addr.hip | **PASS** | Device pointer arithmetic |
 | madmax.hip | **PASS** | Device helper functions |
 | mstress.hip | **PASS** | Memory stress test |
 | printf.hip | **PASS** | Device printf |
@@ -68,6 +68,26 @@ VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 
 ---
 
+## Recently Fixed Issues (2025-12-21)
+
+### Host-Side Constant Folding Mismatch (FIXED)
+- **Tests:** diverge
+- **Error:** Kernel crash due to argument count mismatch
+- **Cause:** MLIR's constant folding removed compile-time constant kernel arguments (e.g., `samples=10`), but host stub still sent the original 4 args
+- **Fix:** Added `ConstantArgumentAnalyzer` to HIPSourceTransform that detects constant args at launch sites and excludes them from wrapper/stub generation, matching MLIR's behavior
+
+### Device Address Handling (FIXED)
+- **Tests:** io_addr
+- **Error:** Test used 64-bit host pointer values instead of 32-bit device addresses
+- **Fix:** Use `hip_ptr_to_device_addr()` runtime function to get actual device addresses for device pointer arithmetic
+
+### Kernel Name Extraction for uint64_t Pointers (FIXED)
+- **Tests:** io_addr
+- **Error:** Kernel name extracted as `io_addr_kernelPmPjj` instead of `io_addr_kernel`
+- **Fix:** Added `Pm` (pointer to unsigned long) and other pointer type suffixes to `extractKernelNameFromWrapper()` in ReorderGPUKernelArgs pass
+
+---
+
 ## Recently Fixed Issues (2025-12-16)
 
 ### Host `__shared__` Macro Conflict (FIXED)
@@ -107,9 +127,11 @@ VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 | `__syncthreads()` | **Working** | Lowered to barrier |
 | `__shared__` memory | **Working** | Lowered to local memory |
 | Device printf | **Working** | Lowered to vx_printf |
-| `__device__` functions | **Working** | Use `__host__ __device__` for dual-context |
+| `__device__` functions | **Working** | Inlined during compilation |
 | Math functions | **Working** | Device stubs + declarations |
 | Memory fences | **Working** | Inline no-ops (TODO: proper pass lowering) |
+| Constant arg folding | **Working** | Host-side analysis matches MLIR folding |
+| Device addresses | **Working** | `hip_ptr_to_device_addr()` for pointer arithmetic |
 | Atomics | **Untested** | May work via RISC-V atomics |
 
 ---
