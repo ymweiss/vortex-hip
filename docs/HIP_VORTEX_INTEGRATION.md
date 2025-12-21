@@ -648,3 +648,76 @@ The host binary automatically:
 | **Examples** | |
 | `hip_tests/basic.hip` | Basic memory copy test |
 | `hip_tests/vecadd.hip` | Vector addition test |
+
+---
+
+## Test Verification Order
+
+Tests should be verified in order from least complex to most complex. This allows debugging issues incrementally.
+
+### Already Verified ✅
+
+| Test | Features | Status |
+|------|----------|--------|
+| `basic.hip` | Simple memory copy, single blockIdx | PASSED |
+| `demo.hip` | Loop-based element processing, blockIdx only | PASSED |
+| `relu.hip` | Conditional logic, activation function | PASSED |
+| `vecadd.hip` | Standard CUDA pattern (blockIdx + threadIdx) | PASSED |
+| `printf.hip` | Device printf | PASSED |
+
+### Remaining Tests (Ordered by Complexity)
+
+#### Tier 1: Simple Kernels (Single Operation)
+
+| Priority | Test | Lines | Kernels | Features | Notes |
+|----------|------|-------|---------|----------|-------|
+| 1 | `fence.hip` | ~40 | 1 | Memory fence | Tests `__threadfence()` |
+| 2 | `io_addr.hip` | ~60 | 1 | I/O addressing | Simple address test |
+| 3 | `dropout.hip` | ~80 | 1 | Random/conditional | Dropout layer |
+| 4 | `diverge.hip` | ~50 | 1 | Branch divergence | Thread divergence handling |
+| 5 | `mstress.hip` | ~100 | 1 | Memory stress | Many memory accesses |
+
+#### Tier 2: Medium Complexity (Multiple Operations)
+
+| Priority | Test | Lines | Kernels | Features | Notes |
+|----------|------|-------|---------|----------|-------|
+| 6 | `sgemm.hip` | ~150 | 1 | Matrix multiply | Basic GEMM |
+| 7 | `sgemv.hip` | ~120 | 1 | Matrix-vector | GEMV operation |
+| 8 | `conv3.hip` | ~200 | 1 | 3D convolution | Stencil pattern |
+
+#### Tier 3: Advanced Features
+
+| Priority | Test | Lines | Kernels | Features | Notes |
+|----------|------|-------|---------|----------|-------|
+| 9 | `dotproduct.hip` | ~150 | 1 | `__shared__`, `__syncthreads()` | Reduction pattern |
+| 10 | `sgemm2.hip` | ~200 | 1 | `__shared__`, tiled GEMM | Optimized matrix multiply |
+| 11 | `cta.hip` | ~100 | 1 | 2D thread indexing | Uses `threadIdx.x` + `threadIdx.y` |
+| 12 | `sort.hip` | ~250 | 1+ | Parallel sort | Bitonic or similar |
+| 13 | `stencil3d.hip` | ~200 | 1 | 3D stencil | Complex memory access |
+
+#### Tier 4: Complex Multi-Kernel
+
+| Priority | Test | Lines | Kernels | Features | Notes |
+|----------|------|-------|---------|----------|-------|
+| 14 | `dogfood.hip` | ~400 | 8 | Multiple kernels | Full test suite |
+
+### Verification Commands
+
+```bash
+# Basic test pattern
+./scripts/compile_hip_v2.sh hip_tests/TEST_NAME.hip --keep-temps -o build_test_NAME
+./build_test_NAME
+
+# Expected output: "PASSED!" or similar success message
+
+# If test fails, check intermediate files:
+ls /tmp/TEST_NAME*.mlir           # MLIR stages
+cat /tmp/TEST_NAME*.vortex.mlir   # Vortex-lowered MLIR
+```
+
+### Feature-Specific Notes
+
+- **`__shared__` + `__syncthreads()`**: Requires shared memory lowering in GPUToVortex pass
+- **2D indexing**: Requires proper `threadIdx.x`/`threadIdx.y` handling
+- **Multiple kernels**: Each kernel gets separate `.vxbin`, host switches between them
+- **Device printf**: Requires printf buffer setup in runtime
