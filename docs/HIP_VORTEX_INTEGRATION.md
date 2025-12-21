@@ -655,56 +655,30 @@ The host binary automatically:
 
 Tests should be verified in order from least complex to most complex. This allows debugging issues incrementally.
 
-### Already Verified ✅
+### SimX Runtime Status
+
+**Compilation:** All 23 tests compile successfully (100%)
+
+**SimX Verified:**
 
 | Test | Features | Status |
 |------|----------|--------|
-| `basic.hip` | Simple memory copy, single blockIdx | PASSED |
-| `demo.hip` | Loop-based element processing, blockIdx only | PASSED |
-| `relu.hip` | Conditional logic, activation function | PASSED |
-| `vecadd.hip` | Standard CUDA pattern (blockIdx + threadIdx) | PASSED |
-| `printf.hip` | Device printf | PASSED |
-| `fence.hip` | Memory fence, loop-based processing, 2 scalars | PASSED |
-| `io_addr.hip` | Indirect memory access, uint64_t pointers | PASSED |
+| `basic.hip` | Simple memory copy, single blockIdx | ✅ PASSED |
+| `demo.hip` | Loop-based element processing, blockIdx only | ✅ PASSED |
+| `relu.hip` | Conditional logic, activation function | ✅ PASSED |
+| `vecadd.hip` | Standard CUDA pattern (blockIdx + threadIdx) | ✅ PASSED |
+| `printf.hip` | Device printf | ✅ PASSED |
+| `fence.hip` | Memory fence, loop-based processing | ✅ PASSED |
+| `io_addr.hip` | Device pointer arithmetic, uint64_t pointers | ✅ PASSED |
+| `diverge.hip` | Thread divergence, constant arg folding | ✅ PASSED |
 
-### Remaining Tests (Ordered by Complexity)
-
-#### Tier 1: Simple Kernels (Single Operation)
-
-| Priority | Test | Lines | Kernels | Features | Notes |
-|----------|------|-------|---------|----------|-------|
-| 1 | `mstress.hip` | ~100 | 1 | Memory stress | Many memory accesses |
+**Pending SimX Verification:** 15 tests (dotproduct, sgemm, sgemm2, sgemv, conv3, cta, sort, stencil3d, dogfood, madmax, mstress, sgemm_tcu, simple_malloc_test, vecadd_v2, dropout)
 
 #### Known Issues
 
-| Test | Issue | Root Cause |
-|------|-------|------------|
-| `dropout.hip` | Kernel crashes during execution | f32→f64→f32 conversion may not be supported |
-| `diverge.hip` | Kernel crashes during execution | Constant folding removes `samples` arg (4→3 args) but host sends 4 |
-
-#### Tier 2: Medium Complexity (Multiple Operations)
-
-| Priority | Test | Lines | Kernels | Features | Notes |
-|----------|------|-------|---------|----------|-------|
-| 6 | `sgemm.hip` | ~150 | 1 | Matrix multiply | Basic GEMM |
-| 7 | `sgemv.hip` | ~120 | 1 | Matrix-vector | GEMV operation |
-| 8 | `conv3.hip` | ~200 | 1 | 3D convolution | Stencil pattern |
-
-#### Tier 3: Advanced Features
-
-| Priority | Test | Lines | Kernels | Features | Notes |
-|----------|------|-------|---------|----------|-------|
-| 9 | `dotproduct.hip` | ~150 | 1 | `__shared__`, `__syncthreads()` | Reduction pattern |
-| 10 | `sgemm2.hip` | ~200 | 1 | `__shared__`, tiled GEMM | Optimized matrix multiply |
-| 11 | `cta.hip` | ~100 | 1 | 2D thread indexing | Uses `threadIdx.x` + `threadIdx.y` |
-| 12 | `sort.hip` | ~250 | 1+ | Parallel sort | Bitonic or similar |
-| 13 | `stencil3d.hip` | ~200 | 1 | 3D stencil | Complex memory access |
-
-#### Tier 4: Complex Multi-Kernel
-
-| Priority | Test | Lines | Kernels | Features | Notes |
-|----------|------|-------|---------|----------|-------|
-| 14 | `dogfood.hip` | ~400 | 8 | Multiple kernels | Full test suite |
+| Test | Issue | Status |
+|------|-------|--------|
+| `dropout.hip` | f32→f64→f32 conversion may cause precision issues | Needs SimX testing |
 
 ### Verification Commands
 
