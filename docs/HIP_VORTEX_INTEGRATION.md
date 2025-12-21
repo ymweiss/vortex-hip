@@ -665,6 +665,7 @@ Tests should be verified in order from least complex to most complex. This allow
 | `vecadd.hip` | Standard CUDA pattern (blockIdx + threadIdx) | PASSED |
 | `printf.hip` | Device printf | PASSED |
 | `fence.hip` | Memory fence, loop-based processing, 2 scalars | PASSED |
+| `io_addr.hip` | Indirect memory access, uint64_t pointers | PASSED |
 
 ### Remaining Tests (Ordered by Complexity)
 
@@ -672,10 +673,9 @@ Tests should be verified in order from least complex to most complex. This allow
 
 | Priority | Test | Lines | Kernels | Features | Notes |
 |----------|------|-------|---------|----------|-------|
-| 1 | `io_addr.hip` | ~60 | 1 | I/O addressing | Kernel naming issue |
-| 2 | `dropout.hip` | ~80 | 1 | Random/conditional | Dropout layer |
-| 3 | `diverge.hip` | ~50 | 1 | Branch divergence | Thread divergence handling |
-| 4 | `mstress.hip` | ~100 | 1 | Memory stress | Many memory accesses |
+| 1 | `dropout.hip` | ~80 | 1 | Random/conditional | Dropout layer |
+| 2 | `diverge.hip` | ~50 | 1 | Branch divergence | Thread divergence handling |
+| 3 | `mstress.hip` | ~100 | 1 | Memory stress | Many memory accesses |
 
 #### Tier 2: Medium Complexity (Multiple Operations)
 
