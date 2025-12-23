@@ -34,13 +34,13 @@ Using `compile_hip_v2.sh` pipeline:
 | vecadd.hip | **PASS** | Vector addition |
 | vecadd_v2.hip | **PASS** | Vector addition (v2 style) |
 
-**Summary: 23/23 compile successfully (100%)**
+**Summary: 13/23 pass at runtime (57%)**
 
 **Important Notes:**
-- **Compilation only:** Status reflects successful compilation, not runtime correctness.
-- **Verified at runtime:** basic, demo, diverge, fence, io_addr, madmax, mstress, printf, relu, sgemm, simple_malloc_test, vecadd (12 tests)
-- **Conversion quality:** Many tests were converted from Vortex's original test format to HIP. Unverified tests may have conversion errors and require manual review before use.
+- **Runtime verified:** basic, demo, diverge, fence, io_addr, madmax, mstress, printf, relu, sgemm, sgemv, simple_malloc_test, vecadd (13 tests)
+- **Known failures:** conv3 (Polygeist bug), dotproduct/sgemm2 (shared memory issues), sort (multi-kernel), stencil3d (3D issues)
 - **Vortex thread limit:** Tests using >16 threads per block have been fixed (madmax, sgemm, conv3, sgemm_tcu, vecadd_v2).
+- **2D kernels:** sgemm and madmax (2D kernels) pass with kernel_arg_mapping fix.
 
 ---
 
@@ -177,20 +177,20 @@ Tests were converted from Vortex's original test format to HIP. Unverified tests
 | mstress.hip | ✓ | Verified |
 | printf.hip | ✓ | Verified |
 | relu.hip | ✓ | Verified |
-| sgemm.hip | ✓ | Verified (fixed block size 4x4) |
+| sgemm.hip | ✓ | Verified (fixed block size 4x4, 2D kernel) |
+| sgemv.hip | ✓ | Verified |
 | simple_malloc_test.hip | ✓ | Verified |
 | vecadd.hip | ✓ | Verified |
 | conv3.hip | ✗ POLYGEIST BUG | Polygeist loses `paddedWidth = width + 2` computation |
 | cta.hip | ✗ NEEDS FIX | 3D grid/block dims not lowering correctly |
+| dotproduct.hip | ✗ FAILS | Shared memory reduction - wrong results |
+| sgemm2.hip | ✗ FAILS | Tiled SGEMM - wrong results |
+| sort.hip | ✗ FAILS | Multi-kernel not supported (bitonic_sort_step not found) |
+| stencil3d.hip | ✗ FAILS | 3D stencil - wrong results |
 | vecadd_v2.hip | ✗ NEEDS FIX | User-defined launch wrapper not supported |
 | dogfood.hip | - | Needs verification |
-| dotproduct.hip | - | Needs verification (uses __shared__) |
 | dropout.hip | - | Needs verification |
-| sgemm2.hip | - | Needs verification (uses __shared__) |
 | sgemm_tcu.hip | - | Needs verification |
-| sgemv.hip | - | Needs verification |
-| sort.hip | - | Needs verification |
-| stencil3d.hip | - | Needs verification |
 
 **Before using unverified tests:**
 1. Review the HIP conversion against original Vortex test
