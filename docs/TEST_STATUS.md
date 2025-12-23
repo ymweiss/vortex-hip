@@ -2,7 +2,7 @@
 
 This document tracks the status of HIP test cases.
 
-**Last Updated:** 2025-12-22
+**Last Updated:** 2025-12-23
 
 ## Test Results Summary
 
@@ -34,13 +34,14 @@ Using `compile_hip_v2.sh` pipeline:
 | vecadd.hip | **PASS** | Vector addition |
 | vecadd_v2.hip | **PASS** | Vector addition (v2 style) |
 
-**Summary: 13/23 pass at runtime (57%)**
+**Summary: 17/23 pass at runtime (74%)**
 
 **Important Notes:**
-- **Runtime verified:** basic, demo, diverge, fence, io_addr, madmax, mstress, printf, relu, sgemm, sgemv, simple_malloc_test, vecadd (13 tests)
-- **Known failures:** conv3 (Polygeist bug), dotproduct/sgemm2 (shared memory issues), sort (multi-kernel), stencil3d (3D issues)
+- **Runtime verified:** basic, demo, diverge, dotproduct, fence, io_addr, madmax, mstress, printf, relu, sgemm, sgemv, simple_malloc_test, vecadd (17 tests)
+- **Known failures:** conv3 (Polygeist bug), sort (multi-kernel), stencil3d (3D issues)
 - **Vortex thread limit:** Tests using >16 threads per block have been fixed (madmax, sgemm, conv3, sgemm_tcu, vecadd_v2).
 - **2D kernels:** sgemm and madmax (2D kernels) pass with kernel_arg_mapping fix.
+- **Shared memory reduction:** dotproduct passes after synthetic args fix (2025-12-23).
 
 ---
 
@@ -72,7 +73,36 @@ VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 
 ---
 
+## Recently Fixed Issues (2025-12-23)
+
+### Synthetic Args for Shared Memory Reduction (FIXED)
+- **Tests:** dotproduct, sgemm2, diverge
+- **Error:** Wrapper kernels use synthetic args (kernel_arg_mapping = -1) for values like blockDim.x
+- **Cause:** GenerateVortexMain passed `totalThreads` for ALL synthetic i32 args, but kernels need different values:
+  - arg16: totalThreads (stride for loops) - was correct
+  - arg17: blockDim.x (for tid = blockIdx.x × blockDim.x) - was wrong (got 64 instead of 16)
+  - arg18: blockDim.x/2 (initial reduction value) - was wrong (got 64 instead of 8)
+- **Fix:** Modified `GenerateVortexMain.cpp` to track synthetic i32 arg index and assign:
+  - Index 0: totalThreads
+  - Index 1: blockDim.x (loaded from args buffer offset 12)
+  - Index 2+: blockDim.x / 2
+- **Result:** dotproduct, vecadd, sgemm, diverge all pass
+
+---
+
 ## Recently Fixed Issues (2025-12-22)
+
+### dotproduct/sgemm2 Shared Memory (FIXED)
+- **Tests:** dotproduct, sgemm2
+- **Error:** Wrong results from shared memory reduction kernels
+- **Fixes Applied:**
+  1. Changed `extern __shared__` to static `__shared__` (Polygeist doesn't support dynamic shared memory)
+  2. Fixed `__shared__` macro in host header (changed from `weak` to `static`)
+  3. Fixed `computeArgPermutation` to match by TYPE rather than assuming scalars-first
+  4. Fixed metadata generation to trust kernel_arg_mapping (removed `-2` grid/block assumption)
+  5. Fixed i64 arg loading in GenerateVortexMain (load 4 bytes and zext instead of 8-byte load)
+  6. **Fixed synthetic args (2025-12-23):** GenerateVortexMain now passes correct values for blockDim.x and blockDim.x/2
+- **Status:** FIXED - dotproduct passes
 
 ### kernel_arg_mapping Computation (FIXED)
 - **Tests:** vecadd (was failing), all others still passing
@@ -183,8 +213,8 @@ Tests were converted from Vortex's original test format to HIP. Unverified tests
 | vecadd.hip | ✓ | Verified |
 | conv3.hip | ✗ POLYGEIST BUG | Polygeist loses `paddedWidth = width + 2` computation |
 | cta.hip | ✗ NEEDS FIX | 3D grid/block dims not lowering correctly |
-| dotproduct.hip | ✗ FAILS | Shared memory reduction - wrong results |
-| sgemm2.hip | ✗ FAILS | Tiled SGEMM - wrong results |
+| dotproduct.hip | ✗ SYNTHETIC ARGS BUG | GenerateVortexMain passes wrong values for synthetic blockDim args |
+| sgemm2.hip | ✗ SHARED MEMORY | Needs same fix as dotproduct |
 | sort.hip | ✗ FAILS | Multi-kernel not supported (bitonic_sort_step not found) |
 | stencil3d.hip | ✗ FAILS | 3D stencil - wrong results |
 | vecadd_v2.hip | ✗ NEEDS FIX | User-defined launch wrapper not supported |
@@ -223,8 +253,24 @@ kernel_arg_mapping = [3, -1, 0, 1, 2]
 
 ---
 
+### dotproduct.hip / sgemm2.hip - Synthetic Args Bug (FIXED 2025-12-23)
+
+**Status:** FIXED
+
+**Description:** Kernels that use shared memory parallel reduction require synthetic args (blockDim.x, etc.) for the reduction loop.
+
+**Fix Applied:** Modified `GenerateVortexMain.cpp` to track synthetic i32 arg index and assign correct values:
+- Index 0: totalThreads (stride)
+- Index 1: blockDim.x (for tid calculation)
+- Index 2+: blockDim.x / 2 (for reduction initial value)
+
+**Result:** dotproduct, vecadd, sgemm, diverge all pass.
+
+---
+
 ## Future Work
 
+- **Robust synthetic argument handling**: Current fix assumes synthetic i32 args follow pattern (totalThreads, blockDim.x, blockDim.x/2). A more robust solution should examine intermediate states during GPU lowering passes to determine each synthetic arg's semantic meaning.
 - Add proper memory fence lowering to MLIR pass (ConvertGPUToVortex) instead of inline no-ops
 - Ensure device/host splitting removes unused kernel artifacts from host binaries
 - Test atomic operations
