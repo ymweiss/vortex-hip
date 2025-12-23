@@ -818,9 +818,38 @@ hipError_t vortexLaunchKernel(const char* kernel_name,
                      reinterpret_cast<uint8_t*>(block_dims),
                      reinterpret_cast<uint8_t*>(block_dims) + sizeof(block_dims));
 
-    // Append user arguments (already packed by generated stub)
+    // Convert and pack user arguments from host format to device format
+    // Host uses 64-bit pointers, device (RV32) uses 32-bit pointers
     const uint8_t* args_bytes = reinterpret_cast<const uint8_t*>(args);
-    arg_buffer.insert(arg_buffer.end(), args_bytes, args_bytes + args_size);
+
+    if (metadata && num_args > 0) {
+        // Use metadata to properly convert each argument
+        for (size_t i = 0; i < num_args; ++i) {
+            const VortexKernelArgMeta& meta = metadata[i];
+
+            if (meta.is_pointer) {
+                // Read 64-bit host pointer from host struct
+                void* host_ptr = nullptr;
+                std::memcpy(&host_ptr, args_bytes + meta.offset, sizeof(void*));
+
+                // Convert to 32-bit device address
+                uint32_t device_addr = hip_ptr_to_device_addr(host_ptr);
+
+                // Pack 32-bit address into device buffer
+                arg_buffer.insert(arg_buffer.end(),
+                                 reinterpret_cast<uint8_t*>(&device_addr),
+                                 reinterpret_cast<uint8_t*>(&device_addr) + sizeof(device_addr));
+            } else {
+                // Non-pointer: copy directly (assumes size matches between host and device)
+                arg_buffer.insert(arg_buffer.end(),
+                                 args_bytes + meta.offset,
+                                 args_bytes + meta.offset + meta.size);
+            }
+        }
+    } else {
+        // Fallback: copy raw bytes (no conversion)
+        arg_buffer.insert(arg_buffer.end(), args_bytes, args_bytes + args_size);
+    }
 
     // Upload arguments to device
     vx_buffer_h arg_buffer_device;

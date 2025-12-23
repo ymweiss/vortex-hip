@@ -92,7 +92,8 @@ int main(int argc, char *argv[]) {
 
   // Allocate device memory
   TYPE *d_src0, *d_src1, *d_dst;
-  int threads_per_block = 64;
+  // Note: Vortex supports max 16 threads per block
+  int threads_per_block = 16;
   int num_blocks = 4;
 
   HIP_CHECK(hipMalloc(&d_src0, buf_size));

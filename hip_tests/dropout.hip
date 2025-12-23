@@ -159,7 +159,8 @@ int main(int argc, char *argv[]) {
 
   // Launch kernel
   printf("launch kernel\n");
-  int threads_per_block = 64;
+  // Note: Vortex supports max 16 threads per block
+  int threads_per_block = 16;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
   hipLaunchKernelGGL(dropout_kernel, dim3(num_blocks), dim3(threads_per_block), 0, 0,

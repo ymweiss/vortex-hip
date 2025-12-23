@@ -155,7 +155,8 @@ int main(int argc, char *argv[]) {
 
   // Launch kernel
   printf("launch kernel\n");
-  dim3 threads_per_block(16, 16);
+  // Vortex supports max 16 threads per block
+  dim3 threads_per_block(4, 4);
   dim3 num_blocks((size + threads_per_block.x - 1) / threads_per_block.x,
                   (size + threads_per_block.y - 1) / threads_per_block.y);
 

@@ -277,3 +277,59 @@ The end-to-end pipeline now correctly:
 | `scripts/compile_hip_v2.sh` | Use transformed source for host |
 | `scripts/generate_host_stubs.py` | Compute host struct offsets for 64-bit |
 | `scripts/polygeist/inject_kernel_launchers.py` | Include kernel_stubs.h |
+
+## Latest Fix: kernel_arg_mapping Computation (December 22, 2025)
+
+### Problem: Incorrect Mapping for Non-Reordered Kernels
+
+The `ReorderGPUKernelArgs` pass was computing incorrect `kernel_arg_mapping` values when Polygeist didn't reorder kernel arguments to scalars-first order.
+
+**Example - vecadd kernel:**
+- Wrapper order: `(ptr, ptr, ptr, scalar)` - original HIP order
+- GPU kernel order: `(memref, memref, memref, i32)` - NOT reordered by Polygeist
+- Computed mapping: `[3, 0, 1, 2]` - WRONG (assumed scalar-first)
+- Correct mapping: `[0, 1, 2, 3]` - identity
+
+### Root Cause
+
+The pass assumed Polygeist ALWAYS reorders to scalars-first, but Polygeist's reordering behavior is inconsistent across kernels.
+
+### Solution
+
+Modified `ReorderGPUKernelArgs.cpp` to:
+
+1. **Check actual GPU arg types** vs wrapper types:
+   ```cpp
+   for (unsigned i = 0; i < numUserArgs; ++i) {
+     Type gpuArgType = argTypes[argsToSkip + i];
+     bool gpuIsPtr = gpuArgType.isa<MemRefType>();
+     bool wrapperIsPtr = originalIsPointer[i];
+     if (gpuIsPtr != wrapperIsPtr) {
+       needsReorder = true;
+       break;
+     }
+   }
+   ```
+
+2. **Conditionally reorder**: Only reorder if types don't match wrapper order.
+
+3. **Set identity mapping after reorder**: After reordering kernel args to match wrapper, set `kernel_arg_mapping = [0, 1, 2, ...]`.
+
+4. **Handle leading synthetic args**: Count leading `index` types separately from trailing `llvm.ptr` types.
+
+### Key Insight: cgeist Internal Pipeline
+
+The `ReorderGPUKernelArgs` pass runs inside `cgeist` (not `polygeist-opt`) as part of its internal pass pipeline at:
+- `tools/cgeist/driver.cc:776`
+- `tools/cgeist/driver.cc:934`
+
+**When modifying this pass, `cgeist` must be rebuilt**, not just `polygeist-opt`.
+
+### Test Results
+
+After the fix:
+- vecadd: PASSED ✓
+- mstress: PASSED ✓
+- relu: PASSED ✓
+- basic: PASSED ✓
+- demo: PASSED ✓

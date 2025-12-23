@@ -144,10 +144,13 @@ extern "C" __device__ void __syncthreads(void);
 
 // Memory fence intrinsics
 // These ensure memory operations are visible across threads/blocks
-// Implemented as inline no-ops for Vortex (can add fence.rw if needed later)
-__device__ inline void __threadfence(void) {}
-__device__ inline void __threadfence_block(void) {}
-__device__ inline void __threadfence_system(void) {}
+// Lowered to RISC-V fence instructions by ConvertGPUToVortex.cpp:
+//   __threadfence_block() -> fence rw, rw (orders within block)
+//   __threadfence()       -> fence rw, rw (orders device-wide)
+//   __threadfence_system() -> fence iorw, iorw (visible to host/other devices)
+extern "C" __device__ void __threadfence(void);
+extern "C" __device__ void __threadfence_block(void);
+extern "C" __device__ void __threadfence_system(void);
 
 // ------------------------------------------------------------------
 // 8a. Device Math Functions

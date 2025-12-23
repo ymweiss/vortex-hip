@@ -40,16 +40,17 @@
 
 // Tensor Core Unit configuration
 // These define the tile sizes for matrix multiplication
+// Vortex supports max 16 threads per block (TILE_M * TILE_N <= 16)
 #ifndef TILE_M
-#define TILE_M 16
+#define TILE_M 4
 #endif
 
 #ifndef TILE_N
-#define TILE_N 16
+#define TILE_N 4
 #endif
 
 #ifndef TILE_K
-#define TILE_K 16
+#define TILE_K 4
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////

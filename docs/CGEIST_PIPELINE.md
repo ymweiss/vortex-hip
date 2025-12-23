@@ -148,12 +148,32 @@ gpu.launch_func @gpu_module::@kernel blocks(...) threads(...)
 
 **File**: `lib/polygeist/Passes/ReorderGPUKernelArgs.cpp`
 
-**Purpose**: Attempts to fix kernel argument order by matching against wrapper function parameters.
+**Purpose**: Fixes kernel argument order by matching against wrapper function parameters and sets `kernel_arg_mapping` attribute.
 
 **How it works**:
 1. Finds wrapper functions (e.g., `__launch_<kernel>`)
 2. Extracts expected argument order from wrapper parameters
-3. Reorders `gpu.func` arguments to match
+3. **Checks if GPU arg types differ from wrapper types** (fixed Dec 2025)
+4. If types differ: Reorders `gpu.func` arguments to match wrapper order
+5. Sets `kernel_arg_mapping` to identity `[0, 1, 2, ...]` after reordering
+6. Sets `vortex.kernel_name` attribute for metadata file naming
+
+**Key Fix (December 2025)**: The pass previously assumed Polygeist always reordered args to scalars-first, but this was inconsistent. The fix checks actual GPU arg types against wrapper types:
+
+```cpp
+bool needsReorder = false;
+for (unsigned i = 0; i < numUserArgs; ++i) {
+  Type gpuArgType = argTypes[argsToSkip + i];
+  bool gpuIsPtr = gpuArgType.isa<MemRefType>();
+  bool wrapperIsPtr = originalIsPointer[i];
+  if (gpuIsPtr != wrapperIsPtr) {
+    needsReorder = true;
+    break;
+  }
+}
+```
+
+**Important**: This pass runs inside `cgeist` (not `polygeist-opt`). When modifying it, rebuild both `cgeist` and `polygeist-opt`.
 
 **Limitation**: Only works if wrapper function exists and has correct parameter order.
 

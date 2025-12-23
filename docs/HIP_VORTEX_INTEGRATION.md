@@ -665,14 +665,17 @@ Tests should be verified in order from least complex to most complex. This allow
 |------|----------|--------|
 | `basic.hip` | Simple memory copy, single blockIdx | ✅ PASSED |
 | `demo.hip` | Loop-based element processing, blockIdx only | ✅ PASSED |
-| `relu.hip` | Conditional logic, activation function | ✅ PASSED |
-| `vecadd.hip` | Standard CUDA pattern (blockIdx + threadIdx) | ✅ PASSED |
-| `printf.hip` | Device printf | ✅ PASSED |
+| `diverge.hip` | Thread divergence, constant arg folding | ✅ PASSED |
 | `fence.hip` | Memory fence, loop-based processing | ✅ PASSED |
 | `io_addr.hip` | Device pointer arithmetic, uint64_t pointers | ✅ PASSED |
-| `diverge.hip` | Thread divergence, constant arg folding | ✅ PASSED |
+| `mstress.hip` | Memory stress test | ✅ PASSED |
+| `printf.hip` | Device printf | ✅ PASSED |
+| `relu.hip` | Conditional logic, activation function | ✅ PASSED |
+| `vecadd.hip` | Standard CUDA pattern (blockIdx + threadIdx) | ✅ PASSED |
 
-**Pending SimX Verification:** 15 tests (dotproduct, sgemm, sgemm2, sgemv, conv3, cta, sort, stencil3d, dogfood, madmax, mstress, sgemm_tcu, simple_malloc_test, vecadd_v2, dropout)
+**Pending SimX Verification:** 14 tests (conv3, cta, dogfood, dotproduct, dropout, madmax, sgemm, sgemm2, sgemm_tcu, sgemv, simple_malloc_test, sort, stencil3d, vecadd_v2)
+
+**Note:** Many tests were converted from Vortex's original test format. Unverified tests may have conversion errors and require manual review before use. See TEST_STATUS.md for details.
 
 #### Known Issues
 

@@ -104,7 +104,8 @@ static inline bool almost_equal(float a, float b) {
 
 int main(int argc, char *argv[]) {
   uint32_t num_points = 1024;
-  int threads_per_block = 64;
+  // Note: Vortex supports max 16 threads per block
+  int threads_per_block = 16;
 
   // Parse command line
   for (int i = 1; i < argc; i++) {

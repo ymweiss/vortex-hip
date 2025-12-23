@@ -216,6 +216,29 @@ apt install llvm-18-dev clang-18 libmlir-18-dev
 
 ---
 
+## Development Constraints
+
+### No LLVM/MLIR Core Modifications
+
+**Constraint:** No changes can be made to LLVM/MLIR core code (`Polygeist/llvm-project/`).
+
+**Rationale:** Reducing storage requirements requires using builtin LLVM instead of a modified fork. Building a custom LLVM fork requires ~200GB of storage and hours of build time. Using system LLVM packages eliminates this requirement.
+
+**Scope:** All modifications must be in Polygeist-specific code:
+- `Polygeist/tools/cgeist/` - Clang frontend modifications
+- `Polygeist/lib/polygeist/` - Vortex MLIR passes
+
+**Impact on development:**
+- Cannot modify `KernelOutlining.cpp` or other LLVM/MLIR passes
+- Must work around LLVM limitations through Polygeist-level code
+- Solution patterns must be compatible with stock LLVM behavior
+
+**Example workaround:** The kernel argument reordering issue in `KernelOutlining.cpp` cannot be fixed directly. Instead, launch wrappers are generated at the clang AST level (in `clang-mlir.cc`) where arguments can be properly traced.
+
+See `docs/WRAPPER_GENERATION_INVESTIGATION.md` for detailed investigation of wrapper-based solutions.
+
+---
+
 ## Risk Assessment
 
 | Risk | Impact | Mitigation |

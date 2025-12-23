@@ -85,7 +85,8 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipMemcpy(d_B, h_B.data(), buf_size, hipMemcpyHostToDevice));
 
   // Launch kernel
-  dim3 threads(16, 16);
+  // Vortex supports max 16 threads per block
+  dim3 threads(4, 4);
   dim3 blocks((size + threads.x - 1) / threads.x, (size + threads.y - 1) / threads.y);
 
   hipLaunchKernelGGL(sgemm_kernel, blocks, threads, 0, 0,

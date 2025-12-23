@@ -58,8 +58,9 @@ int main() {
     // Launch kernel
     // This is handled by Polygeist's --cuda-lower flag
     // Converts to gpu.launch_func in MLIR
-    dim3 gridDim(1, 1, 1);
-    dim3 blockDim(256, 1, 1);
+    // Note: Vortex supports max 16 threads per block
+    dim3 gridDim((N + 15) / 16, 1, 1);
+    dim3 blockDim(16, 1, 1);
     hipLaunchKernelGGL(vector_add, gridDim, blockDim, 0, 0, d_a, d_b, d_c, N);
 
     // Synchronize

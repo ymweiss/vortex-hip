@@ -30,7 +30,8 @@ void launch_vecadd(const float* d_a, const float* d_b, float* d_c, int n, int bl
 
 int main(int argc, char** argv) {
     const int N = 1024;
-    const int BLOCK_SIZE = 256;
+    // Vortex supports max 16 threads per block
+    const int BLOCK_SIZE = 16;
     const size_t bytes = N * sizeof(float);
 
     printf("Vector Addition Example (N=%d)\n", N);

@@ -153,8 +153,26 @@ fi
 # Derive names
 BASENAME=$(basename "$INPUT_FILE" .hip)
 BASENAME=$(basename "$BASENAME" .cu)
-WORK_DIR=$(dirname "$INPUT_FILE")
-OUTPUT="${OUTPUT:-$BASENAME}"
+INPUT_DIR=$(dirname "$INPUT_FILE")
+
+# Build directory: use -o argument as directory, or default to build_<basename>
+if [ -n "$OUTPUT" ]; then
+    # If output looks like a path, use parent as build dir
+    if [[ "$OUTPUT" == */* ]]; then
+        BUILD_DIR=$(dirname "$OUTPUT")
+        OUTPUT=$(basename "$OUTPUT")
+    else
+        BUILD_DIR="${INPUT_DIR}/build_${OUTPUT}"
+    fi
+else
+    BUILD_DIR="${INPUT_DIR}/build_${BASENAME}"
+    OUTPUT="$BASENAME"
+fi
+
+# Create build directory for all outputs (metadata, vxbin, stubs, executable)
+mkdir -p "$BUILD_DIR"
+WORK_DIR="$BUILD_DIR"
+log_info "Build directory: $BUILD_DIR"
 
 # Check tools
 check_tool() {
@@ -242,9 +260,13 @@ compile_device_mlir() {
 
     # Stage 1b: Compile transformed source to GPU MLIR
     log_info "  Compiling to GPU dialect MLIR..."
+    # Note: --emit-host-functions is required so that wrapper functions containing
+    # <<<>>> syntax are compiled in device mode. Without it, host-only functions
+    # (like __launch_*) are skipped, leaving them with empty bodies.
     run_cmd "$CGEIST" "$TRANSFORMED_CU" \
         --cuda-lower \
         --emit-cuda \
+        --emit-host-functions \
         --vortex-single-kernel \
         --cuda-gpu-arch=sm_60 \
         -nocudalib -nocudainc \

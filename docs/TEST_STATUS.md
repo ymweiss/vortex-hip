@@ -2,7 +2,7 @@
 
 This document tracks the status of HIP test cases.
 
-**Last Updated:** 2025-12-21
+**Last Updated:** 2025-12-22
 
 ## Test Results Summary
 
@@ -36,7 +36,11 @@ Using `compile_hip_v2.sh` pipeline:
 
 **Summary: 23/23 compile successfully (100%)**
 
-**Note:** Compilation tests only. SimX runtime validation pending.
+**Important Notes:**
+- **Compilation only:** Status reflects successful compilation, not runtime correctness.
+- **Verified at runtime:** basic, demo, diverge, fence, io_addr, madmax, mstress, printf, relu, sgemm, simple_malloc_test, vecadd (12 tests)
+- **Conversion quality:** Many tests were converted from Vortex's original test format to HIP. Unverified tests may have conversion errors and require manual review before use.
+- **Vortex thread limit:** Tests using >16 threads per block have been fixed (madmax, sgemm, conv3, sgemm_tcu, vecadd_v2).
 
 ---
 
@@ -65,6 +69,18 @@ mkdir -p build_output
 # Run on Vortex simulator
 VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 ```
+
+---
+
+## Recently Fixed Issues (2025-12-22)
+
+### kernel_arg_mapping Computation (FIXED)
+- **Tests:** vecadd (was failing), all others still passing
+- **Error:** Incorrect kernel argument mapping caused wrong data to be passed to kernel
+- **Cause:** `ReorderGPUKernelArgs` pass assumed Polygeist always reorders args to scalars-first, but Polygeist's behavior is inconsistent
+- **Example:** vecadd kernel received mapping `[3, 0, 1, 2]` (wrong) instead of `[0, 1, 2, 3]` (correct identity)
+- **Fix:** Check actual GPU arg types vs wrapper types to determine if reordering is needed; set identity mapping after reordering
+- **Note:** This pass runs inside `cgeist`, not `polygeist-opt`. Both must be rebuilt when modifying it.
 
 ---
 
@@ -146,8 +162,71 @@ VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 
 ---
 
+## Test Conversion Status
+
+Tests were converted from Vortex's original test format to HIP. Unverified tests may have conversion errors:
+
+| Test | Runtime Verified | Notes |
+|------|------------------|-------|
+| basic.hip | ✓ | Verified |
+| demo.hip | ✓ | Verified |
+| diverge.hip | ✓ | Verified |
+| fence.hip | ✓ | Verified |
+| io_addr.hip | ✓ | Verified |
+| madmax.hip | ✓ | Verified (fixed block size 4x4) |
+| mstress.hip | ✓ | Verified |
+| printf.hip | ✓ | Verified |
+| relu.hip | ✓ | Verified |
+| sgemm.hip | ✓ | Verified (fixed block size 4x4) |
+| simple_malloc_test.hip | ✓ | Verified |
+| vecadd.hip | ✓ | Verified |
+| conv3.hip | ✗ POLYGEIST BUG | Polygeist loses `paddedWidth = width + 2` computation |
+| cta.hip | ✗ NEEDS FIX | 3D grid/block dims not lowering correctly |
+| vecadd_v2.hip | ✗ NEEDS FIX | User-defined launch wrapper not supported |
+| dogfood.hip | - | Needs verification |
+| dotproduct.hip | - | Needs verification (uses __shared__) |
+| dropout.hip | - | Needs verification |
+| sgemm2.hip | - | Needs verification (uses __shared__) |
+| sgemm_tcu.hip | - | Needs verification |
+| sgemv.hip | - | Needs verification |
+| sort.hip | - | Needs verification |
+| stencil3d.hip | - | Needs verification |
+
+**Before using unverified tests:**
+1. Review the HIP conversion against original Vortex test
+2. Compile with `--verbose --keep-temps` to inspect intermediate MLIR
+3. Run on SimX and verify output matches expected results
+
+---
+
+## Known Polygeist Lowering Bugs
+
+### conv3.hip - Local Variable Optimization Bug
+
+**Status:** Blocking
+
+**Description:** Polygeist incorrectly optimizes the local variable computation `paddedWidth = width + 2`. Instead of computing `width + 2` in the kernel, it hoists this as a separate kernel argument and maps it to the original `width` value, losing the `+2`.
+
+**Symptom:** The kernel uses `width` (32) for input buffer stride instead of `paddedWidth` (34), causing incorrect memory accesses.
+
+**Analysis:**
+```mlir
+# Expected: row * (width + 2) + col for input indexing
+# Actual: row * width + col (missing +2)
+
+kernel_arg_mapping = [3, -1, 0, 1, 2]
+# arg0 → host arg 3 (width), but kernel uses it as paddedWidth
+# arg1 → synthetic (-1), kernel uses it as width (coincidentally correct due to totalThreads=32=width)
+```
+
+**Workaround:** None that preserves correct test semantics. Test is correctly written; bug is in Polygeist.
+
+---
+
 ## Future Work
 
 - Add proper memory fence lowering to MLIR pass (ConvertGPUToVortex) instead of inline no-ops
 - Ensure device/host splitting removes unused kernel artifacts from host binaries
 - Test atomic operations
+- Verify and fix remaining test conversions
+- Fix Polygeist local variable hoisting bug (conv3)
