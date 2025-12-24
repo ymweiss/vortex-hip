@@ -98,7 +98,7 @@ int main(int argc, char *argv[]) {
 
     if (diff > FLOAT_ULP * std::numeric_limits<TYPE>::epsilon()) {
       if (errors < 100) {
-        printf("*** error: [%d] expected=%f, actual=%f\n", i, ref, cur);
+        printf("*** error: [%d] expected=%f, actual=%f\n", i, (double)ref, (double)cur);
       }
       ++errors;
     }

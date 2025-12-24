@@ -219,7 +219,7 @@ int main(int argc, char *argv[]) {
       if (diff > tolerance) {
         if (errors < 100) {
           printf("*** error: [%d,%d] expected=%f, actual=%f, diff=%f\n",
-                 row, col, sum, cur, diff);
+                 row, col, (double)sum, (double)cur, (double)diff);
         }
         ++errors;
       }

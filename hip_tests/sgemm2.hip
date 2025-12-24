@@ -190,7 +190,7 @@ int main(int argc, char *argv[]) {
         if (errors < 100) {
           uint32_t row = i / size;
           uint32_t col = i % size;
-          printf("*** error: [%d,%d] expected=%f, actual=%f\n", row, col, expected, actual);
+          printf("*** error: [%d,%d] expected=%f, actual=%f\n", row, col, (double)expected, (double)actual);
         }
         ++errors;
       }

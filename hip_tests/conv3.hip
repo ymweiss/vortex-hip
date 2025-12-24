@@ -68,7 +68,7 @@ public:
     auto d = std::abs(fa.i - fb.i);
     if (d > FLOAT_ULP) {
       if (errors < 100) {
-        printf("*** error: [%d] expected=%f, actual=%f\n", index, b, a);
+        printf("*** error: [%d] expected=%f, actual=%f\n", index, (double)b, (double)a);
       }
       return false;
     }

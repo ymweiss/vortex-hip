@@ -63,7 +63,7 @@ public:
   static bool compare(float a, float b, int index, int errors) {
     if (fabs(a - b) > 1e-3f) {
       if (errors < 100) {
-        printf("*** error: [%d] expected=%f, actual=%f\n", index, b, a);
+        printf("*** error: [%d] expected=%f, actual=%f\n", index, (double)b, (double)a);
       }
       return false;
     }

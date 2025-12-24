@@ -112,7 +112,7 @@ int main(int argc, char *argv[]) {
 
       if (diff > FLOAT_ULP * std::numeric_limits<TYPE>::epsilon() * size) {
         if (errors < 100) {
-          printf("*** error: [%d,%d] expected=%f, actual=%f\n", row, col, sum, cur);
+          printf("*** error: [%d,%d] expected=%f, actual=%f\n", row, col, (double)sum, (double)cur);
         }
         ++errors;
       }

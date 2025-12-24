@@ -132,8 +132,8 @@ int main(int argc, char *argv[]) {
 
   // Verify result
   printf("verify result\n");
-  printf("CPU result: %u\n", cpu_result);
-  printf("GPU result: %u\n", gpu_result);
+  printf("CPU result: %f\n", (double)cpu_result);
+  printf("GPU result: %f\n", (double)gpu_result);
 
   TYPE diff = std::abs(cpu_result - gpu_result);
   TYPE epsilon = FLOAT_ULP * std::numeric_limits<TYPE>::epsilon();
@@ -146,7 +146,7 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipFree(d_dst));
 
   if (!passed) {
-    printf("Error: difference = %u\n", diff);
+    printf("Error: difference = %f\n", (double)diff);
     printf("FAILED!\n");
     return 1;
   }

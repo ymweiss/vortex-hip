@@ -207,7 +207,7 @@ int main(int argc, char *argv[]) {
     for (uint32_t i = 0; i < num_points; ++i) {
       float expected = h_fsrc0[i] + h_fsrc1[i];
       if (!almost_equal(h_fdst[i], expected)) {
-        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, expected, h_fdst[i]);
+        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, (double)expected, (double)h_fdst[i]);
         errors++;
       }
     }
@@ -227,7 +227,7 @@ int main(int argc, char *argv[]) {
     for (uint32_t i = 0; i < num_points; ++i) {
       float expected = h_fsrc0[i] * h_fsrc1[i];
       if (!almost_equal(h_fdst[i], expected)) {
-        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, expected, h_fdst[i]);
+        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, (double)expected, (double)h_fdst[i]);
         errors++;
       }
     }
@@ -247,7 +247,7 @@ int main(int argc, char *argv[]) {
     for (uint32_t i = 0; i < num_points; ++i) {
       float expected = h_fsrc0[i] / h_fsrc1[i];
       if (!almost_equal(h_fdst[i], expected)) {
-        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, expected, h_fdst[i]);
+        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, (double)expected, (double)h_fdst[i]);
         errors++;
       }
     }
@@ -274,7 +274,7 @@ int main(int argc, char *argv[]) {
     for (uint32_t i = 0; i < num_points; ++i) {
       float expected = sqrtf(h_fsrc0[i] * h_fsrc1[i]);
       if (!almost_equal(h_fdst[i], expected)) {
-        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, expected, h_fdst[i]);
+        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, (double)expected, (double)h_fdst[i]);
         errors++;
       }
     }
@@ -320,7 +320,7 @@ int main(int argc, char *argv[]) {
     for (uint32_t i = 0; i < num_points; ++i) {
       float expected = (float)(h_isrc0[i] + h_isrc1[i]);
       if (!almost_equal(h_fdst[i], expected)) {
-        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, expected, h_fdst[i]);
+        if (errors < 10) printf("  error[%d]: expected=%f, actual=%f\n", i, (double)expected, (double)h_fdst[i]);
         errors++;
       }
     }
