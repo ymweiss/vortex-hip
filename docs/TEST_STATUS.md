@@ -2,7 +2,7 @@
 
 This document tracks the status of HIP test cases.
 
-**Last Updated:** 2025-12-22
+**Last Updated:** 2025-12-24
 
 ## Test Results Summary
 
@@ -34,13 +34,13 @@ Using `compile_hip_v2.sh` pipeline:
 | vecadd.hip | **PASS** | Vector addition |
 | vecadd_v2.hip | **PASS** | Vector addition (v2 style) |
 
-**Summary: 13/23 pass at runtime (57%)**
+**Summary: 15/23 pass at runtime (65%)**
 
 **Important Notes:**
-- **Runtime verified:** basic, demo, diverge, fence, io_addr, madmax, mstress, printf, relu, sgemm, sgemv, simple_malloc_test, vecadd (13 tests)
-- **Known failures:** conv3 (Polygeist bug), dotproduct/sgemm2 (shared memory issues), sort (multi-kernel), stencil3d (3D issues)
+- **Runtime verified:** basic, demo, diverge, dotproduct, fence, io_addr, madmax, mstress, printf, relu, sgemm, sgemm2, sgemv, simple_malloc_test, vecadd (15 tests)
+- **Known failures:** conv3 (Polygeist bug), sort (multi-kernel), stencil3d (3D issues)
 - **Vortex thread limit:** Tests using >16 threads per block have been fixed (madmax, sgemm, conv3, sgemm_tcu, vecadd_v2).
-- **2D kernels:** sgemm and madmax (2D kernels) pass with kernel_arg_mapping fix.
+- **2D kernels:** sgemm, sgemm2, and madmax (2D kernels) pass with kernel_arg_mapping and blockDimXY fixes.
 
 ---
 
@@ -69,6 +69,21 @@ mkdir -p build_output
 # Run on Vortex simulator
 VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 ```
+
+---
+
+## Recently Fixed Issues (2025-12-24)
+
+### blockDimXY Semantic Detection (FIXED)
+- **Tests:** sgemm2, dotproduct
+- **Error:** Incorrect synthetic argument values for 2D block kernels
+- **Cause:** Kernels using `blockDim.x * blockDim.y` for shared memory offsets couldn't get the correct value at runtime
+- **Example:** sgemm2 uses `local_mem + blockDim.x * blockDim.y` for second tile offset
+- **Fix:** Added semantic detection in KernelOutlining.cpp:
+  - `isDim3MemrefType()` and `findDim3ArgPositions()` for dynamic dim3 argument detection
+  - Pattern detection for `muli(blockDim.x, blockDim.y)` → "blockDimXY"
+  - GenerateVortexMain.cpp now loads blockDim.y and computes blockDimXY product
+- **Result:** sgemm2 and dotproduct now pass
 
 ---
 
@@ -140,6 +155,7 @@ VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 | 1D grid/block | **Working** | Default mode |
 | 2D grid/block | **Working** | dimension=2 passed to vx_spawn_threads |
 | 3D grid/block | **Working** | dimension=3 passed to vx_spawn_threads |
+| 2D block dimensions | **Working** | blockDimXY semantic detection for shared memory |
 | `__syncthreads()` | **Working** | Lowered to barrier |
 | `__shared__` memory | **Working** | Lowered to local memory |
 | Device printf | **Working** | Lowered to vx_printf |
@@ -181,10 +197,10 @@ Tests were converted from Vortex's original test format to HIP. Unverified tests
 | sgemv.hip | ✓ | Verified |
 | simple_malloc_test.hip | ✓ | Verified |
 | vecadd.hip | ✓ | Verified |
+| dotproduct.hip | ✓ | Verified (shared memory reduction) |
+| sgemm2.hip | ✓ | Verified (tiled SGEMM with 2D blocks) |
 | conv3.hip | ✗ POLYGEIST BUG | Polygeist loses `paddedWidth = width + 2` computation |
 | cta.hip | ✗ NEEDS FIX | 3D grid/block dims not lowering correctly |
-| dotproduct.hip | ✗ FAILS | Shared memory reduction - wrong results |
-| sgemm2.hip | ✗ FAILS | Tiled SGEMM - wrong results |
 | sort.hip | ✗ FAILS | Multi-kernel not supported (bitonic_sort_step not found) |
 | stencil3d.hip | ✗ FAILS | 3D stencil - wrong results |
 | vecadd_v2.hip | ✗ NEEDS FIX | User-defined launch wrapper not supported |

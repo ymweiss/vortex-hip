@@ -333,3 +333,145 @@ After the fix:
 - relu: PASSED ✓
 - basic: PASSED ✓
 - demo: PASSED ✓
+
+## Synthetic Argument Semantic Detection (December 24, 2025)
+
+### Problem: 2D Block Dimension Support
+
+Kernels like `sgemm2` use 2D thread blocks and compute shared memory offsets using `blockDim.x * blockDim.y`. During GPU lowering, these computed values become synthetic kernel arguments (with `kernel_arg_mapping = -1`), but their semantic meaning was lost.
+
+**Example - sgemm2 kernel:**
+```cpp
+extern __shared__ TYPE local_mem[];
+TYPE* local_B = local_mem + blockDim.x * blockDim.y;  // Offset for second tile
+```
+
+After GPU lowering, the kernel has synthetic args:
+```mlir
+gpu.func @kernel(%arg0: memref<?xf32>, ...,
+                 %arg5: i32,  // What is this?
+                 %arg6: i32,  // What is this?
+                 %arg7: i32)  // What is this?
+    attributes {kernel_arg_mapping = array<i64: 0, 1, 2, 3, 4, -1, -1, -1>}
+```
+
+The positional heuristic (arg5=totalThreads, arg6=blockDim.x, arg7=blockDim/2) failed for sgemm2 which needs `blockDim.x * blockDim.y`.
+
+### Solution: Semantic Annotation During Kernel Outlining
+
+#### 1. Dynamic dim3 Argument Detection
+
+**File:** `Polygeist/llvm-project/mlir/lib/Dialect/GPU/Transforms/KernelOutlining.cpp`
+
+Added helper functions to find dim3 memref arguments dynamically instead of using hardcoded positions:
+
+```cpp
+/// Check if a type looks like a dim3 memref (memref<?x3xi32>).
+static bool isDim3MemrefType(Type type) {
+  auto memrefTy = dyn_cast<MemRefType>(type);
+  if (!memrefTy) return false;
+  auto shape = memrefTy.getShape();
+  if (shape.size() != 2 || shape[1] != 3) return false;
+  return memrefTy.getElementType().isInteger(32);
+}
+
+/// Find the positions of dim3 arguments in a function.
+static std::pair<int, int> findDim3ArgPositions(func::FuncOp func) {
+  int gridDimArg = -1, blockDimArg = -1;
+  for (unsigned i = 0; i < func.getNumArguments(); ++i) {
+    if (isDim3MemrefType(func.getArgument(i).getType())) {
+      if (gridDimArg < 0) gridDimArg = i;
+      else if (blockDimArg < 0) { blockDimArg = i; break; }
+    }
+  }
+  return {gridDimArg, blockDimArg};
+}
+```
+
+This allows kernels with different numbers of user arguments (4, 5, 6, etc.) to all work correctly.
+
+#### 2. blockDimXY Pattern Detection
+
+**File:** `Polygeist/llvm-project/mlir/lib/Dialect/GPU/Transforms/KernelOutlining.cpp`
+
+Extended `inferSyntheticSemantic()` to detect multiplication of two different block dimensions:
+
+```cpp
+// muli(blockDim.x, blockDim.y) → blockDimXY, etc.
+int lhsBlockIdx = getGpuDimIndex(lhs, true);
+int rhsBlockIdx = getGpuDimIndex(rhs, true);
+if (lhsBlockIdx >= 0 && rhsBlockIdx >= 0 && lhsBlockIdx != rhsBlockIdx) {
+  int minIdx = std::min(lhsBlockIdx, rhsBlockIdx);
+  int maxIdx = std::max(lhsBlockIdx, rhsBlockIdx);
+  if (minIdx == 0 && maxIdx == 1) return "blockDimXY";
+  if (minIdx == 0 && maxIdx == 2) return "blockDimXZ";
+  if (minIdx == 1 && maxIdx == 2) return "blockDimYZ";
+}
+```
+
+Supported semantic annotations:
+| Pattern | Semantic |
+|---------|----------|
+| `blockDim.x` | `"blockDim.x"` |
+| `blockDim.y` | `"blockDim.y"` |
+| `blockDim.z` | `"blockDim.z"` |
+| `gridDim.x` | `"gridDim.x"` |
+| `gridDim.x * blockDim.x` | `"totalThreads"` |
+| `blockDim.x / 2` | `"blockDim/2"` |
+| `blockDim.x * blockDim.y` | `"blockDimXY"` |
+| `blockDim.x * blockDim.z` | `"blockDimXZ"` |
+| `blockDim.y * blockDim.z` | `"blockDimYZ"` |
+
+#### 3. Semantic-Based Argument Unpacking
+
+**File:** `Polygeist/lib/polygeist/Passes/GenerateVortexMain.cpp`
+
+Added loading of `blockDim.y` and computation of `blockDimXY`:
+
+```cpp
+// Load blockDim.y for 2D block calculations
+Value blockDimY_i32 = nullptr;
+{
+  SmallVector<LLVM::GEPArg> gepIndices;
+  gepIndices.push_back(static_cast<int32_t>(BLOCK_DIM_OFFSET + 4));
+  auto blockDimYPtr = builder.create<LLVM::GEPOp>(...);
+  blockDimY_i32 = builder.create<LLVM::LoadOp>(loc, i32Type, blockDimYPtr);
+}
+
+// Compute blockDim.x * blockDim.y for 2D shared memory offsets
+Value blockDimXY_i32 = builder.create<LLVM::MulOp>(loc, blockDimX_i32, blockDimY_i32);
+```
+
+Updated semantic handling to use these values:
+
+```cpp
+if (semantic == "blockDim.y") {
+  argVal = blockDimY_i32;
+  usedSemantic = true;
+} else if (semantic == "blockDimXY") {
+  argVal = blockDimXY_i32;
+  usedSemantic = true;
+}
+```
+
+### Generated MLIR with Semantics
+
+After kernel outlining, synthetic args now have semantic annotations:
+
+```mlir
+gpu.func @sgemm2_kernel(
+    %arg0: memref<?xf32>, %arg1: memref<?xf32>, %arg2: memref<?xf32>,
+    %arg3: i32, %arg4: i32,
+    %arg5: i32 {vortex.synthetic_semantic = "blockDimXY"},
+    %arg6: i32 {vortex.synthetic_semantic = "blockDim.x"},
+    %arg7: i32 {vortex.synthetic_semantic = "blockDim.y"})
+    kernel attributes {kernel_arg_mapping = array<i64: 0, 1, 2, 3, 4, -1, -1, -1>}
+```
+
+### Test Results
+
+After adding blockDimXY support:
+- vecadd: PASSED ✓
+- sgemm: PASSED ✓
+- sgemm2: PASSED ✓ (now working with 2D blocks)
+- dotproduct: PASSED ✓

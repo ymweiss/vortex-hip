@@ -33,7 +33,6 @@
 
 #ifndef __shared__
 // Use weak attribute to allow extern __shared__ without linker errors:
-//   __shared__ TYPE var;           -> __attribute__((weak)) TYPE var;
 //   extern __shared__ TYPE arr[];  -> extern __attribute__((weak)) TYPE arr[];
 // Host kernel code is never executed (replaced by MLIR-generated wrappers)
 #define __shared__ __attribute__((weak))
