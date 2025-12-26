@@ -160,10 +160,50 @@ static std::unordered_map<std::string, KernelInfo> g_kernel_registry;
 // Global module registry - maps module handle to info
 static std::unordered_map<hipModule_t, ModuleInfo> g_module_registry;
 
+// Track currently loaded kernel (only one can be loaded at a time due to fixed address 0x80000000)
+static std::string g_current_loaded_kernel;
+static vx_buffer_h g_current_kernel_buffer = nullptr;
+
 // Path prefix for kernel binaries (can be set via environment variable)
 static const char* get_kernel_path_prefix() {
     const char* env = std::getenv("VORTEX_KERNEL_PATH");
     return env ? env : "./";
+}
+
+// Helper to switch kernels - frees old kernel if necessary
+// Returns 0 on success, -1 on error
+// Vortex only supports one kernel loaded at a time due to fixed address (0x80000000)
+static int switch_kernel_if_needed(vx_device_h device, const std::string& new_kernel_name, vx_buffer_h new_buffer) {
+    if (g_current_loaded_kernel == new_kernel_name && g_current_kernel_buffer != nullptr) {
+        // Same kernel is already loaded
+        return 0;
+    }
+
+    // Need to switch kernels
+    if (g_current_kernel_buffer != nullptr) {
+        // Wait for any running kernel to complete
+        int ret = vx_ready_wait(device, VX_MAX_TIMEOUT);
+        if (ret != 0) {
+            fprintf(stderr, "[HIP] Error waiting for kernel completion before switch\n");
+            return -1;
+        }
+
+        // Free the previous kernel buffer
+        fprintf(stderr, "[HIP] Switching from kernel '%s' to '%s'\n",
+                g_current_loaded_kernel.c_str(), new_kernel_name.c_str());
+        vx_mem_free(g_current_kernel_buffer);
+
+        // Invalidate all cached kernel buffers (they're all at the same address)
+        for (auto& pair : g_kernel_registry) {
+            pair.second.kernel_buffer = nullptr;
+        }
+    }
+
+    // Update tracking
+    g_current_loaded_kernel = new_kernel_name;
+    g_current_kernel_buffer = new_buffer;
+
+    return 0;
 }
 
 //=============================================================================
@@ -532,13 +572,29 @@ hipError_t vortexLaunchKernel(
         return hipErrorNotInitialized;
     }
 
-    // Load kernel (same logic as hipLaunchKernelByName)
+    // Load kernel with multi-kernel support
+    // Vortex only supports one kernel loaded at a time (fixed address 0x80000000)
+    // When switching kernels, we must free the previous one first
     auto it = g_kernel_registry.find(kernel_name);
-    vx_buffer_h kernel_buffer;
+    vx_buffer_h kernel_buffer = nullptr;
+    bool need_load = true;
 
-    if (it != g_kernel_registry.end()) {
-        kernel_buffer = it->second.kernel_buffer;
-    } else {
+    // Check if this kernel is already loaded and current
+    if (it != g_kernel_registry.end() && it->second.kernel_buffer != nullptr) {
+        if (g_current_loaded_kernel == kernel_name) {
+            // This kernel is already loaded and current
+            kernel_buffer = it->second.kernel_buffer;
+            need_load = false;
+        }
+    }
+
+    if (need_load) {
+        // Need to load this kernel - first switch away from current kernel if any
+        if (switch_kernel_if_needed(device, kernel_name, nullptr) != 0) {
+            __hip_set_last_error(hipErrorLaunchFailure);
+            return hipErrorLaunchFailure;
+        }
+
         // Try to load kernel binary
         std::string kernel_path = get_kernel_path_prefix();
         kernel_path += kernel_name;
@@ -563,6 +619,10 @@ hipError_t vortexLaunchKernel(
             __hip_set_last_error(hipErrorLaunchFailure);
             return hipErrorLaunchFailure;
         }
+
+        // Update tracking and cache
+        g_current_loaded_kernel = kernel_name;
+        g_current_kernel_buffer = kernel_buffer;
 
         // Cache for future use
         KernelInfo info;
