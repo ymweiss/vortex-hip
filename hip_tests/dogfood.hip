@@ -286,8 +286,9 @@ int main(int argc, char *argv[]) {
   printf("\n=== Test: ftoi ===\n");
   tests_run++;
   for (uint32_t i = 0; i < num_points; ++i) {
-    h_fsrc0[i] = (float)(num_points / 2 - i);
-    h_fsrc1[i] = (float)(num_points / 2 - i);
+    // Use signed arithmetic to avoid underflow when i > num_points/2
+    h_fsrc0[i] = (float)((int32_t)(num_points / 2) - (int32_t)i);
+    h_fsrc1[i] = (float)((int32_t)(num_points / 2) - (int32_t)i);
   }
   HIP_CHECK(hipMemcpy(d_fsrc0, h_fsrc0, buf_size, hipMemcpyHostToDevice));
   HIP_CHECK(hipMemcpy(d_fsrc1, h_fsrc1, buf_size, hipMemcpyHostToDevice));
