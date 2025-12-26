@@ -16,7 +16,7 @@ Using `compile_hip_v2.sh` pipeline:
 | demo.hip | **PASS** | Simple kernel |
 | diverge.hip | **PASS** | Thread divergence - verified |
 | dogfood.hip | FAIL | Multi-kernel not supported |
-| dotproduct.hip | FAIL | LLC crash during compilation (shared memory) |
+| dotproduct.hip | **PASS** | Parallel reduction with shared memory - FIXED by NVVM barrier lowering |
 | dropout.hip | Untested | Neural network dropout |
 | fence.hip | **PASS** | Memory fence operations |
 | io_addr.hip | **PASS** | Device pointer arithmetic |
@@ -25,7 +25,7 @@ Using `compile_hip_v2.sh` pipeline:
 | printf.hip | **PASS** | Device printf |
 | relu.hip | **PASS** | ReLU activation |
 | sgemm.hip | **PASS** | 2D matrix multiply - FIXED by dimension sinking pass |
-| sgemm2.hip | FAIL | LLC crash during compilation (shared memory) |
+| sgemm2.hip | **PASS** | Tiled matrix multiply with shared memory - FIXED by NVVM barrier lowering |
 | sgemm_tcu.hip | **PASS** | TCU-style matrix multiply - verified |
 | sgemv.hip | **PASS** | Matrix-vector multiply |
 | simple_malloc_test.hip | **PASS** | Simple malloc test |
@@ -34,14 +34,19 @@ Using `compile_hip_v2.sh` pipeline:
 | vecadd.hip | **PASS** | Vector addition - verified |
 | vecadd_v2.hip | **PASS** | Vector addition (v2 style) - verified |
 
-**Summary: 18/23 tests pass (78%)**
+**Summary: 20/23 tests pass (87%)**
 
 **Runtime Verified (2025-12-25):**
-- vecadd, vecadd_v2, diverge, sgemm, cta, stencil3d, conv3, sgemm_tcu, relu, printf, fence, io_addr, madmax, mstress, sgemv, simple_malloc_test, basic, demo
+- vecadd, vecadd_v2, diverge, sgemm, cta, stencil3d, conv3, sgemm_tcu, relu, printf, fence, io_addr, madmax, mstress, sgemv, simple_malloc_test, basic, demo, dotproduct, sgemm2
 
 **Known Failures:**
-- dotproduct, sgemm2: LLC crash during compilation (shared memory issue)
 - sort, dogfood: Multi-kernel support not implemented
+- dropout: Untested
+
+**Key Fixes (2025-12-25 - NVVM Barrier Lowering):**
+- Added `NVVMBarrier0OpLowering` pattern to ConvertGPUToVortex pass
+- `__syncthreads()` was being lowered to `nvvm.barrier0` which wasn't converted
+- dotproduct, sgemm2 now pass - both use shared memory with __syncthreads()
 
 **Key Fixes (2025-12-25 - Dimension Sinking Pass):**
 - Added `SinkGpuDimsIntoLaunch` pass to eliminate synthetic kernel arguments
@@ -79,6 +84,15 @@ VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 ---
 
 ## Recently Fixed Issues (2025-12-25)
+
+### NVVM Barrier0 Lowering (FIXED)
+- **Tests:** dotproduct, sgemm2 (shared memory reduction kernels)
+- **Error:** LLC crash: `Cannot select: intrinsic %llvm.nvvm.barrier0`
+- **Cause:** `__syncthreads()` was being lowered to `nvvm.barrier0` NVVM dialect op, but the ConvertGPUToVortex pass only handled `gpu::BarrierOp`, not `NVVM::Barrier0Op`
+- **Fix:** Added `NVVMBarrier0OpLowering` pattern to ConvertGPUToVortex.cpp that converts `nvvm.barrier0` to `vx_barrier_abi()` calls
+- **Files:**
+  - `lib/polygeist/Passes/ConvertGPUToVortex.cpp` - Added NVVMBarrier0OpLowering pattern and NVVM dialect include
+- **Result:** dotproduct and sgemm2 now pass - shared memory with __syncthreads() works correctly
 
 ### Dimension Sinking Pass (FIXED)
 - **Tests:** sgemm, cta, stencil3d (all multi-dimensional kernels)
@@ -211,7 +225,7 @@ Tests were converted from Vortex's original test format to HIP.
 | demo.hip | ✓ | Verified |
 | diverge.hip | ✓ | Verified |
 | dogfood.hip | ✗ FAILS | Multi-kernel not supported |
-| dotproduct.hip | ✗ FAILS | LLC crash during compilation |
+| dotproduct.hip | ✓ | Verified - FIXED by NVVM barrier lowering |
 | dropout.hip | - | Needs verification |
 | fence.hip | ✓ | Verified |
 | io_addr.hip | ✓ | Verified |
@@ -220,7 +234,7 @@ Tests were converted from Vortex's original test format to HIP.
 | printf.hip | ✓ | Verified |
 | relu.hip | ✓ | Verified |
 | sgemm.hip | ✓ | Verified - FIXED by dimension sinking pass |
-| sgemm2.hip | ✗ FAILS | LLC crash during compilation |
+| sgemm2.hip | ✓ | Verified - FIXED by NVVM barrier lowering |
 | sgemm_tcu.hip | ✓ | Verified |
 | sgemv.hip | ✓ | Verified |
 | simple_malloc_test.hip | ✓ | Verified |

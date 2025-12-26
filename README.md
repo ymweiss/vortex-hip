@@ -716,7 +716,8 @@ vortex_hip/
   - `gpu.block_id` → `vx_get_blockIdx()` TLS accessor
   - `gpu.block_dim` → `vx_get_blockDim()` TLS accessor
   - `gpu.grid_dim` → `vx_get_gridDim()` TLS accessor
-  - `gpu.barrier` → `vx_barrier(bar_id, num_threads)`
+  - `gpu.barrier` → `vx_barrier_abi(bar_id, num_warps)`
+  - `nvvm.barrier0` → `vx_barrier_abi(bar_id, num_warps)` (for `__syncthreads()`)
   - `printf` → `vx_printf`
   - Kernel extraction from `gpu.module` to `func.func`
   - Kernel metadata extraction (JSON + C header generation)
@@ -733,7 +734,7 @@ vortex_hip/
 **GPU Dialect Operations Lowered:**
 - `gpu.block_id`, `gpu.thread_id` - thread indexing → Vortex TLS
 - `gpu.block_dim`, `gpu.grid_dim` - dimension queries → Vortex TLS
-- `gpu.barrier` - synchronization → `vx_barrier_abi()`
+- `gpu.barrier`, `nvvm.barrier0` - synchronization → `vx_barrier_abi()`
 - `gpu.launch_func` - kernel launches → metadata extraction
 - `gpu.module`, `gpu.func` - kernel extraction → `func.func`
 - `memref.global` (address space 3) - shared memory globals → offset annotations
@@ -743,11 +744,13 @@ vortex_hip/
 - ✅ Global memory (address space 0) - standard memref lowering via `--finalize-memref-to-llvm`
 - ✅ Shared memory (address space 3) - custom CSR-based lowering via `VX_CSR_LOCAL_MEM_BASE` (0xFC3)
 
-### 🔄 Phase 3: Full Integration (In Progress)
+### ✅ Phase 3: Full Integration (Complete)
 
 - ✅ End-to-end compilation pipeline (`compile_hip_v2.sh`)
-- ⏳ Testing remaining kernels on SimX (sgemm, conv3, etc.)
-- ⏳ Performance validation with complex kernels
+- ✅ **20/23 test kernels pass (87%)** - vecadd, sgemm, sgemm2, dotproduct, cta, stencil3d, etc.
+- ✅ 1D, 2D, and 3D kernel dispatch via `vx_spawn_threads()`
+- ✅ Shared memory with `__syncthreads()` barriers
+- ⏳ Multi-kernel support (sort, dogfood)
 - ⏳ Extended HIP API coverage
 
 ---
@@ -938,16 +941,21 @@ The Vortex runtime looks for kernel binaries in these locations:
 
 ## Test Kernels
 
-The `hip_tests/kernels/` directory contains test kernels:
+The `hip_tests/` directory contains test kernels. See [docs/TEST_STATUS.md](docs/TEST_STATUS.md) for full test status.
 
-| Kernel | Features |
-|--------|----------|
-| vecadd | Basic thread indexing |
-| sgemm | Matrix multiplication |
-| sgemm2 | Shared memory, barriers |
-| printf | Device-side printf |
-| diverge | Control flow divergence |
-| conv3 | 3D convolution |
+| Kernel | Status | Features |
+|--------|--------|----------|
+| vecadd | ✅ | Basic 1D thread indexing |
+| sgemm | ✅ | 2D matrix multiply (no shared memory) |
+| sgemm2 | ✅ | Tiled matmul with shared memory + barriers |
+| dotproduct | ✅ | Parallel reduction with shared memory |
+| cta | ✅ | 2D grid dispatch |
+| stencil3d | ✅ | 3D kernel dispatch |
+| printf | ✅ | Device-side printf |
+| diverge | ✅ | Control flow divergence |
+| conv3 | ✅ | 2D convolution |
+| sort | ❌ | Multi-kernel (not supported) |
+| dogfood | ❌ | Multi-kernel (not supported) |
 
 Compile all kernels using the automated script:
 
