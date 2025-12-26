@@ -2,7 +2,7 @@
 
 This document tracks the status of HIP test cases.
 
-**Last Updated:** 2025-12-25
+**Last Updated:** 2025-12-26
 
 ## Test Results Summary
 
@@ -15,9 +15,9 @@ Using `compile_hip_v2.sh` pipeline:
 | cta.hip | **PASS** | 2D grid - FIXED by dimension sinking pass |
 | demo.hip | **PASS** | Simple kernel |
 | diverge.hip | **PASS** | Thread divergence - verified |
-| dogfood.hip | FAIL | Multi-kernel not supported |
+| dogfood.hip | **PASS** | Multi-kernel test (8 kernels) - FIXED by multi-kernel runtime support |
 | dotproduct.hip | **PASS** | Parallel reduction with shared memory - FIXED by NVVM barrier lowering |
-| dropout.hip | Untested | Neural network dropout |
+| dropout.hip | **PASS** | Neural network dropout - verified |
 | fence.hip | **PASS** | Memory fence operations |
 | io_addr.hip | **PASS** | Device pointer arithmetic |
 | madmax.hip | **PASS** | Device helper functions |
@@ -29,19 +29,25 @@ Using `compile_hip_v2.sh` pipeline:
 | sgemm_tcu.hip | **PASS** | TCU-style matrix multiply - verified |
 | sgemv.hip | **PASS** | Matrix-vector multiply |
 | simple_malloc_test.hip | **PASS** | Simple malloc test |
-| sort.hip | FAIL | Multi-kernel not supported (bitonic_sort_step not found) |
+| sort.hip | **PASS** | Bitonic sort (21 kernel invocations) - FIXED by multi-kernel runtime support |
 | stencil3d.hip | **PASS** | 3D stencil - FIXED by dimension sinking pass |
 | vecadd.hip | **PASS** | Vector addition - verified |
 | vecadd_v2.hip | **PASS** | Vector addition (v2 style) - verified |
 
-**Summary: 20/23 tests pass (87%)**
+**Summary: 23/23 tests pass (100%)**
 
-**Runtime Verified (2025-12-25):**
-- vecadd, vecadd_v2, diverge, sgemm, cta, stencil3d, conv3, sgemm_tcu, relu, printf, fence, io_addr, madmax, mstress, sgemv, simple_malloc_test, basic, demo, dotproduct, sgemm2
+**Runtime Verified (2025-12-26):**
+- vecadd, vecadd_v2, diverge, sgemm, cta, stencil3d, conv3, sgemm_tcu, relu, printf, fence, io_addr, madmax, mstress, sgemv, simple_malloc_test, basic, demo, dotproduct, sgemm2, dogfood, sort, dropout
 
 **Known Failures:**
-- sort, dogfood: Multi-kernel support not implemented
-- dropout: Untested
+- None
+
+**Key Fixes (2025-12-26 - Multi-Kernel Runtime Support):**
+- Implemented kernel switching in runtime to support multiple different kernels in same program
+- Vortex loads kernels at fixed address (0x80000000), so only one kernel can be loaded at a time
+- Runtime now tracks current kernel and switches by waiting for completion + freeing before loading new one
+- Added math function lowering (sqrtf, sqrt, fabsf, fabs, fminf, fmaxf, floorf, ceilf) to LLVM intrinsics
+- dogfood (8 kernels), sort (21 invocations of same kernel) now pass
 
 **Key Fixes (2025-12-25 - NVVM Barrier Lowering):**
 - Added `NVVMBarrier0OpLowering` pattern to ConvertGPUToVortex pass
@@ -80,6 +86,42 @@ mkdir -p build_output
 # Run on Vortex simulator
 VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 ```
+
+---
+
+## Recently Fixed Issues (2025-12-26)
+
+### Multi-Kernel Runtime Support (FIXED)
+- **Tests:** dogfood, sort (any test with multiple different kernels)
+- **Error:** "address range overlaps with existing allocation" when loading second kernel
+- **Cause:** Vortex loads all kernels at fixed address 0x80000000; only one kernel can be resident at a time
+- **Fix:** Implemented kernel switching in runtime:
+  - Track currently loaded kernel name and buffer
+  - Before loading new kernel: wait for completion, free old kernel buffer
+  - Update tracking state for new kernel
+- **Files:**
+  - `runtime/hip_vortex_runtime/src/hip_kernel.cpp` - Added `switch_kernel_if_needed()` and tracking globals
+- **Result:** Programs with multiple kernels (dogfood: 8 kernels, sort: 21 invocations) now work correctly
+
+### Math Function Lowering (FIXED)
+- **Tests:** dogfood (fsqrt test)
+- **Error:** Missing device library function `sqrtf`
+- **Cause:** Original Vortex tests had inline assembly for math functions; HIP version uses standard math calls which Polygeist lowered to `llvm.sqrt.f32` intrinsic
+- **Fix:** Added `MathFunctionOpLowering` pattern to ConvertGPUToVortex pass:
+  - Lowers: sqrtf, sqrt, fabsf, fabs, fminf, fmaxf, floorf, ceilf
+  - Maps to LLVM intrinsics which compile to RISC-V F extension instructions (fsqrt.s, etc.)
+- **Files:**
+  - `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp` - Added MathFunctionOpLowering pattern
+- **Result:** Math functions work correctly in device kernels
+
+### dogfood ftoi Test Data (FIXED)
+- **Tests:** dogfood (ftoi test)
+- **Error:** expected=INT_MIN vs actual=INT_MAX for indices 513+
+- **Cause:** Unsigned integer underflow: `num_points / 2 - i` when `i > 512` underflows as uint32_t
+- **Fix:** Changed to signed arithmetic: `(float)((int32_t)(num_points / 2) - (int32_t)i)`
+- **Files:**
+  - `hip_tests/dogfood.hip` - Fixed test data initialization
+- **Result:** All 8 dogfood subtests (iadd, imul, fadd, fmul, fdiv, fsqrt, ftoi, itof) pass
 
 ---
 
@@ -191,11 +233,12 @@ VORTEX_HOME=/path/to/vortex ./hip_tests/vecadd
 | 2D grid/block | **Working** | dimension=2 passed to vx_spawn_threads |
 | 3D grid/block | **Working** | dimension=3 passed to vx_spawn_threads |
 | 2D block dimensions | **Working** | blockDimXY semantic detection for shared memory |
+| Multi-kernel programs | **Working** | Runtime kernel switching (one kernel resident at a time) |
 | `__syncthreads()` | **Working** | Lowered to barrier |
 | `__shared__` memory | **Working** | Lowered to local memory |
 | Device printf | **Working** | Lowered to vx_printf |
 | `__device__` functions | **Working** | Inlined during compilation |
-| Math functions | **Working** | Device stubs + declarations |
+| Math functions | **Working** | Lowered to LLVM intrinsics → RISC-V F extension |
 | Memory fences | **Working** | Inline no-ops (TODO: proper pass lowering) |
 | Constant arg folding | **Working** | Host-side analysis matches MLIR folding |
 | Device addresses | **Working** | `hip_ptr_to_device_addr()` for pointer arithmetic |
@@ -224,9 +267,9 @@ Tests were converted from Vortex's original test format to HIP.
 | cta.hip | ✓ | Verified - FIXED by dimension sinking pass |
 | demo.hip | ✓ | Verified |
 | diverge.hip | ✓ | Verified |
-| dogfood.hip | ✗ FAILS | Multi-kernel not supported |
+| dogfood.hip | ✓ | Verified - FIXED by multi-kernel runtime support + math lowering |
 | dotproduct.hip | ✓ | Verified - FIXED by NVVM barrier lowering |
-| dropout.hip | - | Needs verification |
+| dropout.hip | ✓ | Verified (neural network dropout) |
 | fence.hip | ✓ | Verified |
 | io_addr.hip | ✓ | Verified |
 | madmax.hip | ✓ | Verified (fixed block size 4x4) |
@@ -238,7 +281,7 @@ Tests were converted from Vortex's original test format to HIP.
 | sgemm_tcu.hip | ✓ | Verified |
 | sgemv.hip | ✓ | Verified |
 | simple_malloc_test.hip | ✓ | Verified |
-| sort.hip | ✗ FAILS | Multi-kernel not supported |
+| sort.hip | ✓ | Verified - FIXED by multi-kernel runtime support |
 | stencil3d.hip | ✓ | Verified - FIXED by dimension sinking pass |
 | vecadd.hip | ✓ | Verified |
 | vecadd_v2.hip | ✓ | Verified |
