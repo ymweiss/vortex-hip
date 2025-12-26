@@ -45,3 +45,4 @@ trace/
 # Claude dev files
 .claude/
 .development-rules.md
+runtime/build/
