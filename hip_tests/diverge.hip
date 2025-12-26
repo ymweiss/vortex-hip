@@ -5,6 +5,7 @@
 #include <hip/hip_runtime.h>
 #include <iostream>
 #include <vector>
+#include <algorithm>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -21,11 +22,11 @@
 
 ///////////////////////////////////////////////////////////////////////////////
 
-struct key_t {
+struct diverge_key_t {
   uint32_t user = 0;
 };
 
-__device__ __noinline__ void hacker(key_t* key, uint32_t task_id) {
+__device__ __attribute__((noinline)) void hacker(diverge_key_t* key, uint32_t task_id) {
   key->user = task_id;
 }
 
@@ -37,7 +38,7 @@ __global__ void diverge_kernel(int32_t* src, int32_t* dst, uint32_t num_points, 
 
   int value = src[task_id];
 
-  key_t key;
+  diverge_key_t key;
   uint32_t sample_count = samples;
   while (sample_count--) {
     hacker(&key, task_id);
@@ -114,7 +115,7 @@ __global__ void diverge_kernel(int32_t* src, int32_t* dst, uint32_t num_points, 
 int32_t compute_reference(int32_t* src, uint32_t task_id, uint32_t samples) {
   int value = src[task_id];
 
-  key_t key;
+  diverge_key_t key;
   uint32_t sample_count = samples;
   while (sample_count--) {
     key.user = task_id;  // Inline hacker function
@@ -216,7 +217,8 @@ int main(int argc, char *argv[]) {
   HIP_CHECK(hipMemcpy(d_src, h_src.data(), buf_size, hipMemcpyHostToDevice));
 
   // Launch kernel
-  int threads_per_block = 64;
+  // Note: Vortex supports max 16 threads per block
+  int threads_per_block = 16;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
   hipLaunchKernelGGL(diverge_kernel, dim3(num_blocks), dim3(threads_per_block), 0, 0,

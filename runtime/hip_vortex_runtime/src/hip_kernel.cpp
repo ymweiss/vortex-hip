@@ -160,10 +160,50 @@ static std::unordered_map<std::string, KernelInfo> g_kernel_registry;
 // Global module registry - maps module handle to info
 static std::unordered_map<hipModule_t, ModuleInfo> g_module_registry;
 
+// Track currently loaded kernel (only one can be loaded at a time due to fixed address 0x80000000)
+static std::string g_current_loaded_kernel;
+static vx_buffer_h g_current_kernel_buffer = nullptr;
+
 // Path prefix for kernel binaries (can be set via environment variable)
 static const char* get_kernel_path_prefix() {
     const char* env = std::getenv("VORTEX_KERNEL_PATH");
     return env ? env : "./";
+}
+
+// Helper to switch kernels - frees old kernel if necessary
+// Returns 0 on success, -1 on error
+// Vortex only supports one kernel loaded at a time due to fixed address (0x80000000)
+static int switch_kernel_if_needed(vx_device_h device, const std::string& new_kernel_name, vx_buffer_h new_buffer) {
+    if (g_current_loaded_kernel == new_kernel_name && g_current_kernel_buffer != nullptr) {
+        // Same kernel is already loaded
+        return 0;
+    }
+
+    // Need to switch kernels
+    if (g_current_kernel_buffer != nullptr) {
+        // Wait for any running kernel to complete
+        int ret = vx_ready_wait(device, VX_MAX_TIMEOUT);
+        if (ret != 0) {
+            fprintf(stderr, "[HIP] Error waiting for kernel completion before switch\n");
+            return -1;
+        }
+
+        // Free the previous kernel buffer
+        fprintf(stderr, "[HIP] Switching from kernel '%s' to '%s'\n",
+                g_current_loaded_kernel.c_str(), new_kernel_name.c_str());
+        vx_mem_free(g_current_kernel_buffer);
+
+        // Invalidate all cached kernel buffers (they're all at the same address)
+        for (auto& pair : g_kernel_registry) {
+            pair.second.kernel_buffer = nullptr;
+        }
+    }
+
+    // Update tracking
+    g_current_loaded_kernel = new_kernel_name;
+    g_current_kernel_buffer = new_buffer;
+
+    return 0;
 }
 
 //=============================================================================
@@ -532,13 +572,29 @@ hipError_t vortexLaunchKernel(
         return hipErrorNotInitialized;
     }
 
-    // Load kernel (same logic as hipLaunchKernelByName)
+    // Load kernel with multi-kernel support
+    // Vortex only supports one kernel loaded at a time (fixed address 0x80000000)
+    // When switching kernels, we must free the previous one first
     auto it = g_kernel_registry.find(kernel_name);
-    vx_buffer_h kernel_buffer;
+    vx_buffer_h kernel_buffer = nullptr;
+    bool need_load = true;
 
-    if (it != g_kernel_registry.end()) {
-        kernel_buffer = it->second.kernel_buffer;
-    } else {
+    // Check if this kernel is already loaded and current
+    if (it != g_kernel_registry.end() && it->second.kernel_buffer != nullptr) {
+        if (g_current_loaded_kernel == kernel_name) {
+            // This kernel is already loaded and current
+            kernel_buffer = it->second.kernel_buffer;
+            need_load = false;
+        }
+    }
+
+    if (need_load) {
+        // Need to load this kernel - first switch away from current kernel if any
+        if (switch_kernel_if_needed(device, kernel_name, nullptr) != 0) {
+            __hip_set_last_error(hipErrorLaunchFailure);
+            return hipErrorLaunchFailure;
+        }
+
         // Try to load kernel binary
         std::string kernel_path = get_kernel_path_prefix();
         kernel_path += kernel_name;
@@ -563,6 +619,10 @@ hipError_t vortexLaunchKernel(
             __hip_set_last_error(hipErrorLaunchFailure);
             return hipErrorLaunchFailure;
         }
+
+        // Update tracking and cache
+        g_current_loaded_kernel = kernel_name;
+        g_current_kernel_buffer = kernel_buffer;
 
         // Cache for future use
         KernelInfo info;
@@ -673,5 +733,201 @@ hipError_t vortexLaunchKernel(
 
     // Note: args_buffer is leaked - proper implementation would track and free after sync
 
+    return hipSuccess;
+}
+
+//=============================================================================
+// Host Library Support Functions
+// Used by compiled MLIR launch wrappers for direct kernel launching
+//=============================================================================
+
+uint32_t hip_ptr_to_device_addr(const void* host_ptr) {
+    if (host_ptr == nullptr) {
+        return 0;
+    }
+
+    // In this runtime, hipMalloc returns vx_buffer_h as void*
+    // So host_ptr IS the buffer handle
+    vx_buffer_h buffer = (vx_buffer_h)host_ptr;
+
+    uint64_t addr64 = 0;
+    int ret = vx_mem_address(buffer, &addr64);
+    if (ret != 0) {
+        fprintf(stderr, "[HIP] hip_ptr_to_device_addr: Failed to get device address for %p\n", host_ptr);
+        return 0;
+    }
+
+    // Return 32-bit address for RV32
+    return (uint32_t)addr64;
+}
+
+hipError_t vortex_launch_with_args(const char* kernel_name,
+                                    const void* vortex_args,
+                                    size_t args_size) {
+    if (kernel_name == nullptr || vortex_args == nullptr) {
+        __hip_set_last_error(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    vx_device_h device = __hip_get_vortex_device();
+    if (device == nullptr) {
+        __hip_set_last_error(hipErrorNotInitialized);
+        return hipErrorNotInitialized;
+    }
+
+    // Look up kernel in registry
+    auto it = g_kernel_registry.find(kernel_name);
+    vx_buffer_h kernel_buffer;
+
+    if (it != g_kernel_registry.end()) {
+        kernel_buffer = it->second.kernel_buffer;
+    } else {
+        // Try to load from default path
+        std::string kernel_path = get_kernel_path_prefix();
+        kernel_path += kernel_name;
+        kernel_path += ".vxbin";
+
+        int ret = vx_upload_kernel_file(device, kernel_path.c_str(), &kernel_buffer);
+
+        // Fallback: try kernel.vxbin
+        if (ret != 0) {
+            std::string fallback_path = get_kernel_path_prefix();
+            fallback_path += "kernel.vxbin";
+            ret = vx_upload_kernel_file(device, fallback_path.c_str(), &kernel_buffer);
+            if (ret == 0) {
+                kernel_path = fallback_path;
+            }
+        }
+
+        if (ret != 0) {
+            fprintf(stderr, "vortex_launch_with_args: Kernel '%s' not found.\n", kernel_name);
+            __hip_set_last_error(hipErrorLaunchFailure);
+            return hipErrorLaunchFailure;
+        }
+
+        // Cache for future use
+        KernelInfo info;
+        info.kernel_buffer = kernel_buffer;
+        info.name = kernel_name;
+        info.filename = kernel_path;
+        g_kernel_registry[kernel_name] = info;
+    }
+
+    // Upload the pre-packed argument buffer directly to device
+    vx_buffer_h args_buffer;
+    int ret = vx_upload_bytes(device, vortex_args, args_size, &args_buffer);
+    if (ret != 0) {
+        __hip_set_last_error(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    // Launch kernel
+    ret = vx_start(device, kernel_buffer, args_buffer);
+    if (ret != 0) {
+        vx_mem_free(args_buffer);
+        __hip_set_last_error(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    return hipSuccess;
+}
+
+hipError_t vortex_launch_kernel_direct(const char* kernel_name,
+                                        dim3 gridDim,
+                                        dim3 blockDim,
+                                        const uint32_t* device_args,
+                                        size_t num_args) {
+    if (kernel_name == nullptr) {
+        __hip_set_last_error(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    vx_device_h device = __hip_get_vortex_device();
+    if (device == nullptr) {
+        __hip_set_last_error(hipErrorNotInitialized);
+        return hipErrorNotInitialized;
+    }
+
+    // Look up kernel
+    auto it = g_kernel_registry.find(kernel_name);
+    vx_buffer_h kernel_buffer;
+
+    if (it != g_kernel_registry.end()) {
+        kernel_buffer = it->second.kernel_buffer;
+    } else {
+        // Try to load from default path
+        std::string kernel_path = get_kernel_path_prefix();
+        kernel_path += kernel_name;
+        kernel_path += ".vxbin";
+
+        int ret = vx_upload_kernel_file(device, kernel_path.c_str(), &kernel_buffer);
+        if (ret != 0) {
+            std::string fallback_path = get_kernel_path_prefix();
+            fallback_path += "kernel.vxbin";
+            ret = vx_upload_kernel_file(device, fallback_path.c_str(), &kernel_buffer);
+            if (ret == 0) kernel_path = fallback_path;
+        }
+
+        if (ret != 0) {
+            fprintf(stderr, "vortex_launch_kernel_direct: Kernel '%s' not found.\n", kernel_name);
+            __hip_set_last_error(hipErrorLaunchFailure);
+            return hipErrorLaunchFailure;
+        }
+
+        // Cache
+        KernelInfo info;
+        info.kernel_buffer = kernel_buffer;
+        info.name = kernel_name;
+        info.filename = kernel_path;
+        g_kernel_registry[kernel_name] = info;
+    }
+
+    // Build Vortex argument buffer
+    // Header (24 bytes) + user args (num_args * 4 bytes each)
+    size_t total_size = sizeof(VortexKernelArgs) + num_args * sizeof(uint32_t);
+    uint8_t* combined_args = new uint8_t[total_size];
+
+    // Fill header
+    VortexKernelArgs* header = (VortexKernelArgs*)combined_args;
+    header->grid_dim[0] = gridDim.x;
+    header->grid_dim[1] = gridDim.y;
+    header->grid_dim[2] = gridDim.z;
+    header->block_dim[0] = blockDim.x;
+    header->block_dim[1] = blockDim.y;
+    header->block_dim[2] = blockDim.z;
+
+    // Copy user args (already 32-bit device addresses and scalars)
+    if (device_args != nullptr && num_args > 0) {
+        memcpy(combined_args + sizeof(VortexKernelArgs), device_args, num_args * sizeof(uint32_t));
+    }
+
+    // Upload and launch
+    vx_buffer_h args_buffer;
+    int ret = vx_upload_bytes(device, combined_args, total_size, &args_buffer);
+    delete[] combined_args;
+
+    if (ret != 0) {
+        __hip_set_last_error(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    ret = vx_start(device, kernel_buffer, args_buffer);
+    if (ret != 0) {
+        vx_mem_free(args_buffer);
+        __hip_set_last_error(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    return hipSuccess;
+}
+
+hipError_t hip_get_vortex_buffer(const void* host_ptr, void** buffer) {
+    if (host_ptr == nullptr || buffer == nullptr) {
+        __hip_set_last_error(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    // In this runtime, host_ptr IS the buffer handle
+    *buffer = const_cast<void*>(host_ptr);
     return hipSuccess;
 }

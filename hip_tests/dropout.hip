@@ -29,7 +29,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 // Random number generation functions (from common.h)
-__device__ unsigned int WangHash(unsigned int s) {
+// Use __host__ __device__ so they can be called from both device kernel and host verification
+__host__ __device__ unsigned int WangHash(unsigned int s) {
   s = (s ^ 61) ^ (s >> 16);
   s *= 9;
   s = s ^ (s >> 4);
@@ -38,14 +39,14 @@ __device__ unsigned int WangHash(unsigned int s) {
   return s;
 }
 
-__device__ unsigned int RandomInt(unsigned int s) {
+__host__ __device__ unsigned int RandomInt(unsigned int s) {
   s ^= s << 13;
   s ^= s >> 17;
   s ^= s << 5;
   return s;
 }
 
-__device__ float RandomFloat(unsigned int s) {
+__host__ __device__ float RandomFloat(unsigned int s) {
   return RandomInt(s) * 2.3283064365387e-10f;
 }
 
@@ -91,7 +92,7 @@ public:
     auto d = std::abs(fa.i - fb.i);
     if (d > FLOAT_ULP) {
       if (errors < 100) {
-        printf("*** error: [%d] expected=%f, actual=%f\n", index, b, a);
+        printf("*** error: [%d] expected=%f, actual=%f\n", index, (double)b, (double)a);
       }
       return false;
     }
@@ -158,7 +159,8 @@ int main(int argc, char *argv[]) {
 
   // Launch kernel
   printf("launch kernel\n");
-  int threads_per_block = 64;
+  // Note: Vortex supports max 16 threads per block
+  int threads_per_block = 16;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
   hipLaunchKernelGGL(dropout_kernel, dim3(num_blocks), dim3(threads_per_block), 0, 0,

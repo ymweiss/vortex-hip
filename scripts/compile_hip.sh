@@ -2,10 +2,20 @@
 #
 # compile_hip.sh - Full HIP to Vortex compilation pipeline
 #
+# ╔════════════════════════════════════════════════════════════════════════════╗
+# ║  NOTE: This script uses the legacy Python-based workflow.                  ║
+# ║                                                                            ║
+# ║  The preferred approach is to use hipLaunchKernelGGL() in your HIP code,   ║
+# ║  which enables direct compilation with cgeist without Python preprocessing.║
+# ║  ConvertGPUToVortex pass now generates complete host stubs automatically.  ║
+# ║                                                                            ║
+# ║  See: Polygeist/docs/EMIT_VORTEX_WRAPPERS.md                               ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
+#
 # This script compiles a HIP source file through the entire pipeline:
-#   1. Source transformation (inject_kernel_launchers.py)
+#   1. Source transformation (inject_kernel_launchers.py) [LEGACY]
 #   2. Device compilation (Polygeist → MLIR → LLVM IR → RISC-V)
-#   3. Host stub generation (generate_host_stubs.py)
+#   3. Host stub generation (generate_host_stubs.py) [LEGACY - now done by pass]
 #   4. Host compilation (g++)
 #
 # Usage:

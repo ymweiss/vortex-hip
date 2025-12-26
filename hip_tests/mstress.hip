@@ -54,19 +54,25 @@ inline bool almost_equal(float a, float b) {
 
 // HIP kernel for memory stress test
 // Performs NUM_LOADS indirect memory accesses per thread and multiplies values
+//
+// Original Vortex uses vx_spawn_threads(1, &num_tasks, ...) which is 1D:
+// - blockIdx.x is the thread index (0 to num_tasks-1)
+// - Each thread processes 'stride' elements in a loop
+// HIP equivalent: launch with 1 thread per block, use blockIdx.x as thread index
 __global__ void mstress_kernel(uint32_t* addr_ptr, float* src_ptr, float* dst_ptr,
                                uint32_t stride) {
+  // In 1-thread-per-block mode, blockIdx.x is the thread index (like Vortex)
   uint32_t offset = blockIdx.x * stride;
-  uint32_t tid = threadIdx.x;
 
-  if (tid < stride) {
+  // Each thread processes 'stride' elements (matching original Vortex kernel)
+  for (uint32_t i = 0; i < stride; ++i) {
     float value = 0.0f;
     for (uint32_t j = 0; j < NUM_LOADS; ++j) {
-      uint32_t addr = offset + tid + j;
+      uint32_t addr = offset + i + j;
       uint32_t index = addr_ptr[addr];
       value *= src_ptr[index];
     }
-    dst_ptr[offset + tid] = value;
+    dst_ptr[offset + i] = value;
   }
 }
 
@@ -115,11 +121,12 @@ int main(int argc, char *argv[]) {
   hipDeviceProp_t deviceProp;
   HIP_CHECK(hipGetDeviceProperties(&deviceProp, 0));
 
-  // Calculate total threads based on device capability
-  // Using a simplified approach: use warpSize as thread count per block
-  uint32_t threads_per_block = deviceProp.warpSize;
-  uint32_t num_blocks = deviceProp.multiProcessorCount;
-  uint32_t total_threads = num_blocks * threads_per_block;
+  // Match original Vortex model: 1D thread launch where blockIdx.x is thread index
+  // Launch total_threads blocks with 1 thread per block
+  // This matches vx_spawn_threads(1, &num_tasks, ...) behavior
+  uint32_t total_threads = deviceProp.multiProcessorCount * deviceProp.warpSize;
+  uint32_t num_blocks = total_threads;
+  uint32_t threads_per_block = 1;
 
   uint32_t stride = count;
   uint32_t num_points = count * total_threads;

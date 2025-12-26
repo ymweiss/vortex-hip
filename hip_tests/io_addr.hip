@@ -8,6 +8,9 @@
 #include <cstdio>
 #include <cstring>
 
+// Vortex runtime support - for getting actual device addresses
+extern "C" uint32_t hip_ptr_to_device_addr(const void* host_ptr);
+
 #define NUM_ADDRS 16
 
 #define HIP_CHECK(call) \
@@ -36,7 +39,7 @@ __global__ void io_addr_kernel(uint64_t* src_ptr, uint32_t* dst_ptr, uint32_t nu
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void gen_src_addrs(std::vector<uint64_t>& src_addrs, uint64_t addr_base, uint32_t size) {
+void gen_src_addrs(std::vector<uint64_t>& src_addrs, uint32_t addr_base, uint32_t size) {
   src_addrs.resize(size);
   uint32_t u = 0, k = 0;
   for (uint32_t i = 0; i < size; ++i) {
@@ -45,8 +48,8 @@ void gen_src_addrs(std::vector<uint64_t>& src_addrs, uint64_t addr_base, uint32_
       ++u;
     }
     uint32_t j = i % NUM_ADDRS;
-    // All addresses point to the same buffer in HIP (no IO vs user memory distinction)
-    uint64_t a = addr_base + j * sizeof(uint32_t);
+    // Use the actual device address of d_addr buffer
+    uint64_t a = (uint64_t)(addr_base + j * sizeof(uint32_t));
     src_addrs[i] = a;
   }
 }
@@ -109,8 +112,10 @@ int main(int argc, char *argv[]) {
   printf("upload address buffer\n");
   HIP_CHECK(hipMemcpy(d_addr, h_addr.data(), addr_buf_size, hipMemcpyHostToDevice));
 
-  // Get the device address of d_addr to generate source addresses
-  uint64_t d_addr_base = (uint64_t)d_addr;
+  // Get the actual device address of d_addr to generate source addresses
+  // (not the host handle, but the real 32-bit device address)
+  uint32_t d_addr_base = hip_ptr_to_device_addr(d_addr);
+  printf("device address of d_addr: 0x%08x\n", d_addr_base);
 
   // Generate source addresses (pointers into d_addr)
   gen_src_addrs(h_src, d_addr_base, num_points);
@@ -121,7 +126,8 @@ int main(int argc, char *argv[]) {
 
   // Launch kernel
   printf("launch kernel\n");
-  int threads_per_block = 64;
+  // Note: Vortex supports max 16 threads per block
+  int threads_per_block = 16;
   int num_blocks = (num_points + threads_per_block - 1) / threads_per_block;
 
   hipLaunchKernelGGL(io_addr_kernel, dim3(num_blocks), dim3(threads_per_block), 0, 0,

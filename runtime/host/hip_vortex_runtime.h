@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
+#include <tuple>  // Required for hipLaunchKernelGGL macro
 extern "C" {
 #endif
 
@@ -306,11 +307,91 @@ hipError_t vortexLaunchKernel(
 );
 
 //=============================================================================
-// hipLaunchKernelGGL - C++ Template-based Kernel Launch
+// Host Library Support Functions
+// Used by compiled MLIR launch wrappers for direct kernel launching
+// These use C linkage for compatibility with compiled MLIR output
+//=============================================================================
+
+extern "C" {
+
+/**
+ * Convert host buffer pointer to 32-bit device address.
+ * Looks up the pointer in the allocation table and returns the device address.
+ *
+ * This is used by compiled MLIR launch wrappers to convert 64-bit host
+ * pointers (returned by hipMalloc) to 32-bit device addresses for Vortex.
+ *
+ * @param host_ptr  Pointer returned by hipMalloc
+ * @return Device address (32-bit), or 0 if not found
+ */
+uint32_t hip_ptr_to_device_addr(const void* host_ptr);
+
+/**
+ * Launch kernel with pre-packed Vortex argument buffer.
+ * The buffer must already be in Vortex format:
+ *   - grid_dim (3x uint32)
+ *   - block_dim (3x uint32)
+ *   - user args (32-bit device addresses and scalars)
+ *
+ * This is the fast path for compiled MLIR launch wrappers that handle
+ * argument marshalling directly.
+ *
+ * @param kernel_name   Name of the kernel (used to find .vxbin file)
+ * @param vortex_args   Pre-packed argument buffer in Vortex format
+ * @param args_size     Size of the argument buffer
+ * @return hipSuccess on success, error code on failure
+ */
+hipError_t vortex_launch_with_args(
+    const char* kernel_name,
+    const void* vortex_args,
+    size_t args_size
+);
+
+}  // extern "C"
+
+/**
+ * Launch kernel with pre-converted device addresses.
+ * This variant takes grid/block dims separately and expects args to already
+ * contain 32-bit device addresses (not host pointers).
+ *
+ * @param kernel_name   Name of the kernel
+ * @param gridDim       Grid dimensions
+ * @param blockDim      Block dimensions
+ * @param device_args   Array of 32-bit values (device addresses and scalars)
+ * @param num_args      Number of arguments
+ * @return hipSuccess on success, error code on failure
+ */
+hipError_t vortex_launch_kernel_direct(
+    const char* kernel_name,
+    dim3 gridDim,
+    dim3 blockDim,
+    const uint32_t* device_args,
+    size_t num_args
+);
+
+/**
+ * Get the Vortex buffer handle for a host pointer.
+ * Used when direct Vortex API access is needed.
+ *
+ * @param host_ptr  Pointer returned by hipMalloc
+ * @param buffer    Output: Vortex buffer handle
+ * @return hipSuccess if found, hipErrorInvalidValue if not found
+ */
+hipError_t hip_get_vortex_buffer(const void* host_ptr, void** buffer);
+
+//=============================================================================
+// hipLaunchKernelGGL - C++ Template-based Kernel Launch (LEGACY)
 //=============================================================================
 
 /**
  * Standard HIP kernel launch macro
+ *
+ * DEPRECATED: This macro lacks proper argument metadata for pointer conversion.
+ * Use the generated launcher functions from kernel_stubs.h instead:
+ *   - launch_<kernel_name>(gridDim, blockDim, args...)
+ *
+ * For the new approach, include hip_vortex_host.h and the generated stubs.
+ * See: Polygeist/docs/EMIT_VORTEX_WRAPPERS.md
  *
  * Usage: hipLaunchKernelGGL(kernel, gridDim, blockDim, sharedMem, stream, args...)
  *

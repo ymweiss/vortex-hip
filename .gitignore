@@ -26,9 +26,23 @@ Polygeist/llvm-project/build/
 *.a
 *.so
 
+# Generated kernel artifacts (from Polygeist pipeline)
+*.meta.json
+*_args.h
+*.ll
+*.vxbin
+kernel_stubs.h
+
+# Build directories (test builds)
+build_*/
+
+# Vortex trace files
+trace/
+
 # Logs
 *.log
 
 # Claude dev files
 .claude/
 .development-rules.md
+runtime/build/

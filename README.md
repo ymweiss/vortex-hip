@@ -162,26 +162,24 @@ cd $VORTEX_HIP_HOME
 source vortex/build/ci/toolchain_env.sh     # Sets up PATH for RISC-V tools
 
 # Compile a HIP program
-./scripts/compile_hip.sh hip_tests/vecadd.hip
+./scripts/compile_hip_v2.sh hip_tests/vecadd.hip
 
 # Output files:
-#   vecadd        - Host executable
-#   kernel.vxbin  - Device kernel binary
-#   kernel_stubs.h - Generated kernel launch headers
+#   hip_tests/vecadd              - Host executable
+#   hip_tests/vecadd_kernel.vxbin - Device kernel binary
+#   hip_tests/vecadd_kernel_args.h - Generated kernel launch stub
 ```
 
 ### Script Options
 
 ```bash
-./scripts/compile_hip.sh <input.hip> [options]
+./scripts/compile_hip_v2.sh <input.hip> [options]
 
 Options:
   -o <name>       Output executable name (default: input basename)
-  -k <name>       Kernel binary name (default: kernel.vxbin)
-  --mlir <file>   Use existing GPU dialect MLIR file (skip cgeist step)
-  --device-only   Only compile device code (kernel.vxbin + stubs)
+  --device-only   Only compile device code (kernel binary + stubs)
   --host-only     Only compile host code (requires existing stubs)
-  --keep-temps    Keep intermediate files in build_<name>/
+  --keep-temps    Keep intermediate files for debugging
   --verbose       Show all commands
 ```
 
@@ -201,35 +199,27 @@ export LD_LIBRARY_PATH=$VORTEX_HIP_HOME/runtime/build:$LD_LIBRARY_PATH
 
 ## How It Works
 
-The `hipLaunchKernelGGL` macro automatically loads the kernel binary at runtime:
+The compilation pipeline transforms HIP kernel launches for Vortex:
 
-1. **Compile time**: `hipLaunchKernelGGL(my_kernel, grid, block, ...)` is transformed to `hipLaunchKernelByName("my_kernel", ...)`
+1. **Source Transform** (`cgeist --transform-hip-source`):
+   - Generates `__launch_<kernel>()` wrapper function
+   - Wrapper calls generated stub on host, `<<<>>>` on device
+   - Extracts kernel argument metadata from AST
 
-2. **Runtime**: On first kernel launch:
-   - Looks for `./my_kernel.vxbin`
-   - Falls back to `./kernel.vxbin`
-   - Loads kernel binary to device memory
-   - Caches for subsequent launches
-   - Executes with provided arguments
+2. **Device Compilation**:
+   - Polygeist converts HIP → GPU MLIR → Vortex MLIR → LLVM IR
+   - `--convert-gpu-to-vortex` generates `<kernel>_args.h` stub with argument metadata
+   - llvm-vortex compiles LLVM IR → RISC-V `.vxbin` binary
 
-No manual kernel registration required - it's automatic.
+3. **Host Compilation** (with `HIP_HOST_COMPILATION` defined):
+   - Wrapper calls `launch_<kernel>()` from generated stub
+   - Stub uses `vortexLaunchKernel()` with metadata for proper argument marshaling
+   - Host pointers (64-bit) are converted to device addresses (32-bit)
 
----
-
-## How It Works
-
-The `hipLaunchKernelGGL` macro automatically loads the kernel binary at runtime:
-
-1. **Compile time**: `hipLaunchKernelGGL(my_kernel, grid, block, ...)` is transformed to `hipLaunchKernelByName("my_kernel", ...)`
-
-2. **Runtime**: On first kernel launch:
-   - Looks for `./my_kernel.vxbin`
-   - Falls back to `./kernel.vxbin`
-   - Loads kernel binary to device memory
-   - Caches for subsequent launches
-   - Executes with provided arguments
-
-No manual kernel registration required - it's automatic.
+4. **Runtime**:
+   - `vortexLaunchKernel()` loads `./<kernel>.vxbin` on first launch
+   - Arguments are marshaled using metadata (pointer conversion, offset mapping)
+   - Kernel is cached for subsequent launches
 
 ---
 
@@ -240,66 +230,54 @@ The compilation pipeline uses **split compilation** - host and device code are c
 ### Overview
 
 ```
-                         HIP Source (.hip)
-                               │
-                               ▼
-                 ┌─────────────────────────────┐
-                 │  inject_kernel_launchers.py │
-                 │  (source transformation)    │
-                 └─────────────────────────────┘
-                               │
-                               ▼
-                      transformed.cu
-                               │
-            ┌──────────────────┴──────────────────┐
-            ▼                                     ▼
-    ┌───────────────┐                    ┌───────────────┐
-    │ DEVICE PATH   │                    │ HOST PATH     │
-    │ (Polygeist)   │                    │ (g++)         │
-    └───────┬───────┘                    └───────┬───────┘
-            │                                    │
-            ▼                                    │
-    GPU Dialect MLIR                             │
-            │                                    │
-            ▼                                    │
-    ┌───────────────────┐                        │
-    │--convert-gpu-to-  │                        │
-    │     vortex        │───┐                    │
-    └───────────────────┘   │                    │
-            │               │                    │
-            │        ┌──────▼──────┐             │
-            │        │ .meta.json  │             │
-            │        │ (metadata)  │             │
-            │        └──────┬──────┘             │
-            │               │                    │
-            │               ▼                    │
-            │   ┌───────────────────────┐        │
-            │   │generate_host_stubs.py │        │
-            │   └───────────┬───────────┘        │
-            │               │                    │
-            │               ▼                    │
-            │        kernel_stubs.h ─────────────┤
-            │                                    │
-            ▼                                    ▼
-    [MLIR lowering passes]              Host compilation
-            │                           with kernel_stubs.h
-            ▼                                    │
-    [--generate-vortex-main]                     │
-            │                                    │
-            ▼                                    │
-    [mlir-translate]                             │
-            │                                    │
-            ▼                                    │
-    LLVM IR (.ll)                                │
-            │                                    │
-            ▼                                    │
-    [llvm-vortex clang]                          │
-            │                                    │
-            ▼                                    │
-    kernel.vxbin ────────────────────────────────┤
-                                                 │
-                                                 ▼
-                                         host_executable
+                           HIP Source (.hip)
+                                  │
+                                  ▼
+                    ┌─────────────────────────────┐
+                    │  cgeist --transform-hip-src │
+                    │  (AST-level transformation) │
+                    └─────────────────────────────┘
+                                  │
+                    ┌─────────────┼─────────────┐
+                    │             │             │
+                    ▼             ▼             ▼
+            transformed.cu   *_args.h    __launch_* wrapper
+            (conditional)    (stub)      (#ifdef HOST/DEVICE)
+                    │             │             │
+        ┌───────────┴─────────────┴─────────────┘
+        │
+        │  ┌──────────────────────────────────────────────┐
+        │  │              DEVICE PATH                      │
+        │  │              (Polygeist)                      │
+        │  └──────────────────────────────────────────────┘
+        │
+        ├──► cgeist (GPU MLIR) ──► polygeist-opt ──► mlir-opt
+        │                              │
+        │                              ▼
+        │                    *_args.h (stub with metadata)
+        │                    *_kernel.meta.json
+        │                              │
+        │         ┌────────────────────┘
+        │         │
+        │         ▼
+        │    mlir-translate ──► llc ──► clang (link)
+        │                                   │
+        │                                   ▼
+        │                           <kernel>.vxbin
+        │
+        │  ┌──────────────────────────────────────────────┐
+        │  │              HOST PATH                        │
+        │  │    (g++ with HIP_HOST_COMPILATION)           │
+        │  └──────────────────────────────────────────────┘
+        │
+        └──► transformed.cu + *_args.h ──► g++ ──► executable
+                         │
+                         │  __launch_* wrapper calls
+                         │  launch_*() from stub which
+                         │  uses vortexLaunchKernel()
+                         │
+                         ▼
+                  host_executable
 ```
 
 ### Step 1: Write HIP Source
@@ -596,34 +574,32 @@ The transformed source (`vecadd_transformed.cu`) contains both host and device c
 
 | Script | Purpose | Input | Output |
 |--------|---------|-------|--------|
-| `compile_hip.sh` | **Full pipeline automation** | `.hip` | executable + `.vxbin` |
-| `inject_kernel_launchers.py` | Prepare source for split compilation | `.hip` | `_transformed.cu` |
-| `generate_host_stubs.py` | Generate host stubs from metadata | `.meta.json` | `kernel_stubs.h` |
+| `compile_hip_v2.sh` | **Full pipeline automation** | `.hip` | executable + `.vxbin` |
+| `cgeist --transform-hip-source` | AST-level source transformation | `.hip` | `_transformed.cu` + `*_args.h` |
 
 ### Quick Compilation (Automated)
 
-Use the `compile_hip.sh` script to run the entire pipeline automatically:
+Use the `compile_hip_v2.sh` script to run the entire pipeline automatically:
 
 ```bash
 # Basic usage
-./scripts/compile_hip.sh my_kernel.hip
+./scripts/compile_hip_v2.sh my_kernel.hip
 
 # With options
-./scripts/compile_hip.sh my_kernel.hip -o my_app -k my_kernel.vxbin --verbose
+./scripts/compile_hip_v2.sh my_kernel.hip -o my_app --verbose
 
 # Device compilation only (generates stubs and kernel binary)
-./scripts/compile_hip.sh my_kernel.hip --device-only
+./scripts/compile_hip_v2.sh my_kernel.hip --device-only
 
 # Keep intermediate files for debugging
-./scripts/compile_hip.sh my_kernel.hip --keep-temps
+./scripts/compile_hip_v2.sh my_kernel.hip --keep-temps
 ```
 
 **Options:**
 - `-o <name>` - Output executable name (default: input basename)
-- `-k <name>` - Kernel binary name (default: `kernel.vxbin`)
 - `--device-only` - Only compile device code
 - `--host-only` - Only compile host code
-- `--keep-temps` - Keep intermediate files in `build_<name>/`
+- `--keep-temps` - Keep intermediate files
 - `--verbose` - Show all commands being executed
 
 ### Metadata Flow
@@ -727,29 +703,29 @@ vortex_hip/
 - 13 runtime tests passing on Vortex SimX simulator
 - Memory management, device management, kernel launch
 
-### 🔄 Phase 2: Kernel Compilation (85% Complete)
+### ✅ Phase 2: Kernel Compilation (Complete)
 
 **Completed:**
 - ✅ Polygeist compiles HIP kernels to GPU dialect MLIR
-- ✅ 21/22 test kernels compile successfully
-- ✅ Source transformation script (`simplify_hip_for_polygeist.py`)
-- ✅ Split compilation model validated
+- ✅ 23/23 test kernels compile successfully (100% pass rate)
+- ✅ **End-to-end vecadd test passes on Vortex SimX**
+- ✅ HIP source transformation with conditional wrapper generation
+- ✅ Split compilation model with proper argument marshaling
 - ✅ **`--convert-gpu-to-vortex` pass** - Lowers GPU intrinsics to Vortex:
   - `gpu.thread_id` → `vx_get_threadIdx()` TLS accessor
   - `gpu.block_id` → `vx_get_blockIdx()` TLS accessor
   - `gpu.block_dim` → `vx_get_blockDim()` TLS accessor
   - `gpu.grid_dim` → `vx_get_gridDim()` TLS accessor
-  - `gpu.barrier` → `vx_barrier(bar_id, num_threads)`
+  - `gpu.barrier` → `vx_barrier_abi(bar_id, num_warps)`
+  - `nvvm.barrier0` → `vx_barrier_abi(bar_id, num_warps)` (for `__syncthreads()`)
   - `printf` → `vx_printf`
   - Kernel extraction from `gpu.module` to `func.func`
   - Kernel metadata extraction (JSON + C header generation)
-- ✅ **Standard MLIR lowering passes** - Full pipeline to LLVM dialect:
-  - `--convert-scf-to-cf` (control flow)
-  - `--convert-arith-to-llvm` (arithmetic)
-  - `--finalize-memref-to-llvm` (memory descriptors)
-  - `--convert-func-to-llvm` (functions)
-  - `--reconcile-unrealized-casts` (type cleanup)
-- ✅ **`mlir-translate --mlir-to-llvmir`** - Generates valid LLVM IR
+- ✅ **Kernel argument ordering fix**:
+  - `ReorderGPUKernelArgsPass` matches kernels by arg count
+  - `vortex.kernel_name` attribute propagates original name
+  - Host stub uses `vortexLaunchKernel()` with metadata
+  - 64-bit host pointers converted to 32-bit device addresses
 - ✅ **`--generate-vortex-main` pass** - Generates Vortex entry point:
   - `main()` function that reads args from `VX_CSR_MSCRATCH` (0x340)
   - `kernel_body(void* args)` wrapper that unpacks arguments
@@ -758,7 +734,7 @@ vortex_hip/
 **GPU Dialect Operations Lowered:**
 - `gpu.block_id`, `gpu.thread_id` - thread indexing → Vortex TLS
 - `gpu.block_dim`, `gpu.grid_dim` - dimension queries → Vortex TLS
-- `gpu.barrier` - synchronization → `vx_barrier_abi()`
+- `gpu.barrier`, `nvvm.barrier0` - synchronization → `vx_barrier_abi()`
 - `gpu.launch_func` - kernel launches → metadata extraction
 - `gpu.module`, `gpu.func` - kernel extraction → `func.func`
 - `memref.global` (address space 3) - shared memory globals → offset annotations
@@ -768,15 +744,14 @@ vortex_hip/
 - ✅ Global memory (address space 0) - standard memref lowering via `--finalize-memref-to-llvm`
 - ✅ Shared memory (address space 3) - custom CSR-based lowering via `VX_CSR_LOCAL_MEM_BASE` (0xFC3)
 
-**Remaining:**
-- End-to-end integration testing on Vortex SimX simulator
-- Performance validation with complex kernels
+### ✅ Phase 3: Full Integration (Complete)
 
-### ⏳ Phase 3: Full Integration (Planned)
-
-- End-to-end compilation pipeline automation
-- Performance optimizations
-- Extended HIP API coverage
+- ✅ End-to-end compilation pipeline (`compile_hip_v2.sh`)
+- ✅ **20/23 test kernels pass (87%)** - vecadd, sgemm, sgemm2, dotproduct, cta, stencil3d, etc.
+- ✅ 1D, 2D, and 3D kernel dispatch via `vx_spawn_threads()`
+- ✅ Shared memory with `__syncthreads()` barriers
+- ⏳ Multi-kernel support (sort, dogfood)
+- ⏳ Extended HIP API coverage
 
 ---
 
@@ -829,16 +804,22 @@ cd vortex_hip
 source vortex/build/ci/toolchain_env.sh
 
 # 2. Compile using automated script (recommended)
-./scripts/compile_hip.sh hip_tests/vecadd.hip --verbose
+./scripts/compile_hip_v2.sh hip_tests/vecadd.hip --verbose
 
 # This generates:
-#   vecadd        - Host executable
-#   kernel.vxbin  - Device kernel binary
+#   hip_tests/vecadd              - Host executable
+#   hip_tests/vecadd_kernel.vxbin - Device kernel binary
+#   hip_tests/vecadd_kernel_args.h - Kernel launch stub
 
 # 3. Run on simulator
 export VORTEX_DRIVER=simx
 export LD_LIBRARY_PATH=$PWD/vortex/build/runtime:$PWD/runtime/build:$LD_LIBRARY_PATH
-./vecadd
+./hip_tests/vecadd
+
+# Expected output:
+# [HIP] vortexLaunchKernel: Loading kernel: ./vecadd_kernel.vxbin
+# ...
+# PASSED!
 ```
 
 #### Manual Compilation Steps (for reference)
@@ -960,16 +941,21 @@ The Vortex runtime looks for kernel binaries in these locations:
 
 ## Test Kernels
 
-The `hip_tests/kernels/` directory contains test kernels:
+The `hip_tests/` directory contains test kernels. See [docs/TEST_STATUS.md](docs/TEST_STATUS.md) for full test status.
 
-| Kernel | Features |
-|--------|----------|
-| vecadd | Basic thread indexing |
-| sgemm | Matrix multiplication |
-| sgemm2 | Shared memory, barriers |
-| printf | Device-side printf |
-| diverge | Control flow divergence |
-| conv3 | 3D convolution |
+| Kernel | Status | Features |
+|--------|--------|----------|
+| vecadd | ✅ | Basic 1D thread indexing |
+| sgemm | ✅ | 2D matrix multiply (no shared memory) |
+| sgemm2 | ✅ | Tiled matmul with shared memory + barriers |
+| dotproduct | ✅ | Parallel reduction with shared memory |
+| cta | ✅ | 2D grid dispatch |
+| stencil3d | ✅ | 3D kernel dispatch |
+| printf | ✅ | Device-side printf |
+| diverge | ✅ | Control flow divergence |
+| conv3 | ✅ | 2D convolution |
+| sort | ❌ | Multi-kernel (not supported) |
+| dogfood | ❌ | Multi-kernel (not supported) |
 
 Compile all kernels using the automated script:
 
@@ -1059,5 +1045,5 @@ runtime/
 
 ---
 
-**Last Updated:** 2025-12-09
-**Current Phase:** Phase 2 (Kernel Compilation - 95% Complete)
+**Last Updated:** 2025-12-19
+**Current Phase:** Phase 3 (Full Integration - In Progress)

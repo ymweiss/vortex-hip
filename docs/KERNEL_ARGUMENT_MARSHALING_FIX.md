@@ -188,13 +188,290 @@ number of points: 16
 PASSED!
 ```
 
+## Additional Fixes (December 2025)
+
+### Problem: Kernel Naming and Argument Order Mismatch
+
+After kernel outlining, the gpu.func was named `main_kernel` (from the parent function) instead of the original `vecadd_kernel`. The ReorderGPUKernelArgsPass couldn't match the kernel to the wrapper, and the host stub expected a different kernel name than the compiled binary.
+
+### Solution: Multi-Level Fixes
+
+#### 1. ReorderGPUKernelArgs - Match by Arg Count
+**File:** `Polygeist/lib/polygeist/Passes/ReorderGPUKernelArgs.cpp`
+
+When exact name matching fails, try matching by argument count:
+```cpp
+// 3. If still no match, try matching by arg count
+if (it == kernelArgIsPointer.end()) {
+  for (auto &entry : kernelArgIsPointer) {
+    if (entry.second.size() == numGpuUserArgs) {
+      it = kernelArgIsPointer.find(entry.first());
+      break;
+    }
+  }
+}
+```
+
+Also set `vortex.kernel_name` attribute to propagate original kernel name:
+```cpp
+gpuFunc->setAttr("vortex.kernel_name",
+                StringAttr::get(ctx, originalKernelName));
+```
+
+#### 2. ConvertGPUToVortex - Use vortex.kernel_name
+**File:** `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp`
+
+Use the `vortex.kernel_name` attribute for metadata file naming:
+```cpp
+if (auto kernelNameAttr = funcOp->getAttrOfType<StringAttr>("vortex.kernel_name")) {
+  meta.kernelName = kernelNameAttr.getValue().str();
+} else {
+  meta.kernelName = extractBaseKernelName(funcOp.getName()).str();
+}
+```
+
+#### 3. HIPSourceTransform - Conditional Wrapper
+**File:** `Polygeist/tools/cgeist/Lib/HIPSourceTransform.cc`
+
+Generate conditional wrapper that calls stub on host:
+```cpp
+os << "#ifdef HIP_HOST_COMPILATION\n";
+os << "void " << wrapperName << "(" << params << ") {\n";
+os << "    " << stubName << "(__grid, __block, " << args << ");\n";
+os << "}\n";
+os << "#else\n";
+os << "void " << wrapperName << "(" << params << ") {\n";
+os << "    " << kernel.demangledName << "<<<__grid, __block>>>(" << args << ");\n";
+os << "}\n";
+os << "#endif\n";
+```
+
+#### 4. compile_hip_v2.sh - Use Transformed Source
+**File:** `scripts/compile_hip_v2.sh`
+
+Use the transformed source for host compilation:
+```bash
+HOST_SOURCE="$WORK_DIR/${BASENAME}_transformed.cu"
+cp "$TRANSFORMED_CU" "$HOST_SOURCE"
+# ...
+COMPILE_SOURCE="${HOST_SOURCE:-$INPUT_FILE}"
+```
+
+### Result
+
+The end-to-end pipeline now correctly:
+1. Preserves kernel argument order (ptr, ptr, ptr, scalar)
+2. Names kernel binary to match host stub expectations
+3. Marshals host pointers to device addresses via metadata
+
 ## Files Modified
 
 | File | Change |
 |------|--------|
 | `Polygeist/lib/polygeist/Passes/GenerateVortexMain.cpp` | Derive arg0/arg1 from block_dim[0] |
-| `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp` | Skip leading block_dim args in metadata |
+| `Polygeist/lib/polygeist/Passes/ConvertGPUToVortex.cpp` | Skip leading block_dim args; use vortex.kernel_name |
+| `Polygeist/lib/polygeist/Passes/ReorderGPUKernelArgs.cpp` | Match by arg count; set vortex.kernel_name |
+| `Polygeist/tools/cgeist/Lib/HIPSourceTransform.cc` | Conditional wrapper generation |
 | `runtime/hip_vortex_runtime/include/hip_vortex_runtime.h` | Add VortexKernelArgMeta, vortexLaunchKernel |
 | `runtime/hip_vortex_runtime/src/hip_kernel.cpp` | Handle host/device offset mapping |
+| `scripts/compile_hip_v2.sh` | Use transformed source for host |
 | `scripts/generate_host_stubs.py` | Compute host struct offsets for 64-bit |
 | `scripts/polygeist/inject_kernel_launchers.py` | Include kernel_stubs.h |
+
+## Latest Fix: kernel_arg_mapping Computation (December 22, 2025)
+
+### Problem: Incorrect Mapping for Non-Reordered Kernels
+
+The `ReorderGPUKernelArgs` pass was computing incorrect `kernel_arg_mapping` values when Polygeist didn't reorder kernel arguments to scalars-first order.
+
+**Example - vecadd kernel:**
+- Wrapper order: `(ptr, ptr, ptr, scalar)` - original HIP order
+- GPU kernel order: `(memref, memref, memref, i32)` - NOT reordered by Polygeist
+- Computed mapping: `[3, 0, 1, 2]` - WRONG (assumed scalar-first)
+- Correct mapping: `[0, 1, 2, 3]` - identity
+
+### Root Cause
+
+The pass assumed Polygeist ALWAYS reorders to scalars-first, but Polygeist's reordering behavior is inconsistent across kernels.
+
+### Solution
+
+Modified `ReorderGPUKernelArgs.cpp` to:
+
+1. **Check actual GPU arg types** vs wrapper types:
+   ```cpp
+   for (unsigned i = 0; i < numUserArgs; ++i) {
+     Type gpuArgType = argTypes[argsToSkip + i];
+     bool gpuIsPtr = gpuArgType.isa<MemRefType>();
+     bool wrapperIsPtr = originalIsPointer[i];
+     if (gpuIsPtr != wrapperIsPtr) {
+       needsReorder = true;
+       break;
+     }
+   }
+   ```
+
+2. **Conditionally reorder**: Only reorder if types don't match wrapper order.
+
+3. **Set identity mapping after reorder**: After reordering kernel args to match wrapper, set `kernel_arg_mapping = [0, 1, 2, ...]`.
+
+4. **Handle leading synthetic args**: Count leading `index` types separately from trailing `llvm.ptr` types.
+
+### Key Insight: cgeist Internal Pipeline
+
+The `ReorderGPUKernelArgs` pass runs inside `cgeist` (not `polygeist-opt`) as part of its internal pass pipeline at:
+- `tools/cgeist/driver.cc:776`
+- `tools/cgeist/driver.cc:934`
+
+**When modifying this pass, `cgeist` must be rebuilt**, not just `polygeist-opt`.
+
+### Test Results
+
+After the fix:
+- vecadd: PASSED ✓
+- mstress: PASSED ✓
+- relu: PASSED ✓
+- basic: PASSED ✓
+- demo: PASSED ✓
+
+## Synthetic Argument Semantic Detection (December 24, 2025)
+
+### Problem: 2D Block Dimension Support
+
+Kernels like `sgemm2` use 2D thread blocks and compute shared memory offsets using `blockDim.x * blockDim.y`. During GPU lowering, these computed values become synthetic kernel arguments (with `kernel_arg_mapping = -1`), but their semantic meaning was lost.
+
+**Example - sgemm2 kernel:**
+```cpp
+extern __shared__ TYPE local_mem[];
+TYPE* local_B = local_mem + blockDim.x * blockDim.y;  // Offset for second tile
+```
+
+After GPU lowering, the kernel has synthetic args:
+```mlir
+gpu.func @kernel(%arg0: memref<?xf32>, ...,
+                 %arg5: i32,  // What is this?
+                 %arg6: i32,  // What is this?
+                 %arg7: i32)  // What is this?
+    attributes {kernel_arg_mapping = array<i64: 0, 1, 2, 3, 4, -1, -1, -1>}
+```
+
+The positional heuristic (arg5=totalThreads, arg6=blockDim.x, arg7=blockDim/2) failed for sgemm2 which needs `blockDim.x * blockDim.y`.
+
+### Solution: Semantic Annotation During Kernel Outlining
+
+#### 1. Dynamic dim3 Argument Detection
+
+**File:** `Polygeist/llvm-project/mlir/lib/Dialect/GPU/Transforms/KernelOutlining.cpp`
+
+Added helper functions to find dim3 memref arguments dynamically instead of using hardcoded positions:
+
+```cpp
+/// Check if a type looks like a dim3 memref (memref<?x3xi32>).
+static bool isDim3MemrefType(Type type) {
+  auto memrefTy = dyn_cast<MemRefType>(type);
+  if (!memrefTy) return false;
+  auto shape = memrefTy.getShape();
+  if (shape.size() != 2 || shape[1] != 3) return false;
+  return memrefTy.getElementType().isInteger(32);
+}
+
+/// Find the positions of dim3 arguments in a function.
+static std::pair<int, int> findDim3ArgPositions(func::FuncOp func) {
+  int gridDimArg = -1, blockDimArg = -1;
+  for (unsigned i = 0; i < func.getNumArguments(); ++i) {
+    if (isDim3MemrefType(func.getArgument(i).getType())) {
+      if (gridDimArg < 0) gridDimArg = i;
+      else if (blockDimArg < 0) { blockDimArg = i; break; }
+    }
+  }
+  return {gridDimArg, blockDimArg};
+}
+```
+
+This allows kernels with different numbers of user arguments (4, 5, 6, etc.) to all work correctly.
+
+#### 2. blockDimXY Pattern Detection
+
+**File:** `Polygeist/llvm-project/mlir/lib/Dialect/GPU/Transforms/KernelOutlining.cpp`
+
+Extended `inferSyntheticSemantic()` to detect multiplication of two different block dimensions:
+
+```cpp
+// muli(blockDim.x, blockDim.y) → blockDimXY, etc.
+int lhsBlockIdx = getGpuDimIndex(lhs, true);
+int rhsBlockIdx = getGpuDimIndex(rhs, true);
+if (lhsBlockIdx >= 0 && rhsBlockIdx >= 0 && lhsBlockIdx != rhsBlockIdx) {
+  int minIdx = std::min(lhsBlockIdx, rhsBlockIdx);
+  int maxIdx = std::max(lhsBlockIdx, rhsBlockIdx);
+  if (minIdx == 0 && maxIdx == 1) return "blockDimXY";
+  if (minIdx == 0 && maxIdx == 2) return "blockDimXZ";
+  if (minIdx == 1 && maxIdx == 2) return "blockDimYZ";
+}
+```
+
+Supported semantic annotations:
+| Pattern | Semantic |
+|---------|----------|
+| `blockDim.x` | `"blockDim.x"` |
+| `blockDim.y` | `"blockDim.y"` |
+| `blockDim.z` | `"blockDim.z"` |
+| `gridDim.x` | `"gridDim.x"` |
+| `gridDim.x * blockDim.x` | `"totalThreads"` |
+| `blockDim.x / 2` | `"blockDim/2"` |
+| `blockDim.x * blockDim.y` | `"blockDimXY"` |
+| `blockDim.x * blockDim.z` | `"blockDimXZ"` |
+| `blockDim.y * blockDim.z` | `"blockDimYZ"` |
+
+#### 3. Semantic-Based Argument Unpacking
+
+**File:** `Polygeist/lib/polygeist/Passes/GenerateVortexMain.cpp`
+
+Added loading of `blockDim.y` and computation of `blockDimXY`:
+
+```cpp
+// Load blockDim.y for 2D block calculations
+Value blockDimY_i32 = nullptr;
+{
+  SmallVector<LLVM::GEPArg> gepIndices;
+  gepIndices.push_back(static_cast<int32_t>(BLOCK_DIM_OFFSET + 4));
+  auto blockDimYPtr = builder.create<LLVM::GEPOp>(...);
+  blockDimY_i32 = builder.create<LLVM::LoadOp>(loc, i32Type, blockDimYPtr);
+}
+
+// Compute blockDim.x * blockDim.y for 2D shared memory offsets
+Value blockDimXY_i32 = builder.create<LLVM::MulOp>(loc, blockDimX_i32, blockDimY_i32);
+```
+
+Updated semantic handling to use these values:
+
+```cpp
+if (semantic == "blockDim.y") {
+  argVal = blockDimY_i32;
+  usedSemantic = true;
+} else if (semantic == "blockDimXY") {
+  argVal = blockDimXY_i32;
+  usedSemantic = true;
+}
+```
+
+### Generated MLIR with Semantics
+
+After kernel outlining, synthetic args now have semantic annotations:
+
+```mlir
+gpu.func @sgemm2_kernel(
+    %arg0: memref<?xf32>, %arg1: memref<?xf32>, %arg2: memref<?xf32>,
+    %arg3: i32, %arg4: i32,
+    %arg5: i32 {vortex.synthetic_semantic = "blockDimXY"},
+    %arg6: i32 {vortex.synthetic_semantic = "blockDim.x"},
+    %arg7: i32 {vortex.synthetic_semantic = "blockDim.y"})
+    kernel attributes {kernel_arg_mapping = array<i64: 0, 1, 2, 3, 4, -1, -1, -1>}
+```
+
+### Test Results
+
+After adding blockDimXY support:
+- vecadd: PASSED ✓
+- sgemm: PASSED ✓
+- sgemm2: PASSED ✓ (now working with 2D blocks)
+- dotproduct: PASSED ✓

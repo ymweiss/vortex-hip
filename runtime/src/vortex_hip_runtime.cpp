@@ -818,9 +818,38 @@ hipError_t vortexLaunchKernel(const char* kernel_name,
                      reinterpret_cast<uint8_t*>(block_dims),
                      reinterpret_cast<uint8_t*>(block_dims) + sizeof(block_dims));
 
-    // Append user arguments (already packed by generated stub)
+    // Convert and pack user arguments from host format to device format
+    // Host uses 64-bit pointers, device (RV32) uses 32-bit pointers
     const uint8_t* args_bytes = reinterpret_cast<const uint8_t*>(args);
-    arg_buffer.insert(arg_buffer.end(), args_bytes, args_bytes + args_size);
+
+    if (metadata && num_args > 0) {
+        // Use metadata to properly convert each argument
+        for (size_t i = 0; i < num_args; ++i) {
+            const VortexKernelArgMeta& meta = metadata[i];
+
+            if (meta.is_pointer) {
+                // Read 64-bit host pointer from host struct
+                void* host_ptr = nullptr;
+                std::memcpy(&host_ptr, args_bytes + meta.offset, sizeof(void*));
+
+                // Convert to 32-bit device address
+                uint32_t device_addr = hip_ptr_to_device_addr(host_ptr);
+
+                // Pack 32-bit address into device buffer
+                arg_buffer.insert(arg_buffer.end(),
+                                 reinterpret_cast<uint8_t*>(&device_addr),
+                                 reinterpret_cast<uint8_t*>(&device_addr) + sizeof(device_addr));
+            } else {
+                // Non-pointer: copy directly (assumes size matches between host and device)
+                arg_buffer.insert(arg_buffer.end(),
+                                 args_bytes + meta.offset,
+                                 args_bytes + meta.offset + meta.size);
+            }
+        }
+    } else {
+        // Fallback: copy raw bytes (no conversion)
+        arg_buffer.insert(arg_buffer.end(), args_bytes, args_bytes + args_size);
+    }
 
     // Upload arguments to device
     vx_buffer_h arg_buffer_device;
@@ -866,5 +895,181 @@ hipError_t vortexRegisterKernel(const char* kernel_name,
     std::lock_guard<std::mutex> lock(g_mutex);
     g_kernel_by_name[kernel_name] = info;
 
+    return hipSuccess;
+}
+
+//=============================================================================
+// Host Library Support Functions
+// Used by compiled MLIR launch wrappers for direct kernel launching
+// These use C linkage for compatibility with compiled MLIR output
+//=============================================================================
+
+extern "C" uint32_t hip_ptr_to_device_addr(const void* host_ptr) {
+    if (!host_ptr) {
+        return 0;
+    }
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    // Look up in allocation table
+    auto it = g_allocations.find(const_cast<void*>(host_ptr));
+    if (it == g_allocations.end()) {
+        // Not found - return 0 (invalid address)
+        return 0;
+    }
+
+    // Return the 32-bit device address
+    // Note: device_addr is stored as uint64_t but Vortex uses 32-bit addresses
+    return static_cast<uint32_t>(it->second.device_addr);
+}
+
+extern "C" hipError_t vortex_launch_with_args(const char* kernel_name,
+                                               const void* vortex_args,
+                                               size_t args_size) {
+    if (!kernel_name || !vortex_args) {
+        SetLastError(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    hipError_t err = EnsureDeviceInitialized();
+    if (err != hipSuccess) {
+        return err;
+    }
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    // Look up kernel by name
+    auto it = g_kernel_by_name.find(kernel_name);
+    if (it == g_kernel_by_name.end()) {
+        SetLastError(hipErrorInvalidDeviceFunction);
+        return hipErrorInvalidDeviceFunction;
+    }
+
+    VortexKernelInfo& kernel_info = it->second;
+
+    // Ensure kernel is uploaded to device
+    err = EnsureKernelUploaded(kernel_info);
+    if (err != hipSuccess) {
+        return err;
+    }
+
+    // Upload the pre-packed argument buffer directly to device
+    vx_buffer_h arg_buffer_device;
+    int result = vx_upload_bytes(g_device_state.device,
+                                  vortex_args,
+                                  args_size,
+                                  &arg_buffer_device);
+    if (result != 0) {
+        SetLastError(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    // Launch kernel
+    result = vx_start(g_device_state.device,
+                      kernel_info.kernel_binary,
+                      arg_buffer_device);
+
+    if (result != 0) {
+        SetLastError(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    return hipSuccess;
+}
+
+hipError_t vortex_launch_kernel_direct(const char* kernel_name,
+                                        dim3 gridDim,
+                                        dim3 blockDim,
+                                        const uint32_t* device_args,
+                                        size_t num_args) {
+    if (!kernel_name) {
+        SetLastError(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    hipError_t err = EnsureDeviceInitialized();
+    if (err != hipSuccess) {
+        return err;
+    }
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    // Look up kernel by name
+    auto it = g_kernel_by_name.find(kernel_name);
+    if (it == g_kernel_by_name.end()) {
+        SetLastError(hipErrorInvalidDeviceFunction);
+        return hipErrorInvalidDeviceFunction;
+    }
+
+    VortexKernelInfo& kernel_info = it->second;
+
+    // Ensure kernel is uploaded to device
+    err = EnsureKernelUploaded(kernel_info);
+    if (err != hipSuccess) {
+        return err;
+    }
+
+    // Build the Vortex argument buffer
+    std::vector<uint8_t> arg_buffer;
+
+    // Grid dimensions (3x uint32_t = 12 bytes)
+    uint32_t grid_dims[3] = {gridDim.x, gridDim.y, gridDim.z};
+    arg_buffer.insert(arg_buffer.end(),
+                     reinterpret_cast<uint8_t*>(grid_dims),
+                     reinterpret_cast<uint8_t*>(grid_dims) + sizeof(grid_dims));
+
+    // Block dimensions (3x uint32_t = 12 bytes)
+    uint32_t block_dims[3] = {blockDim.x, blockDim.y, blockDim.z};
+    arg_buffer.insert(arg_buffer.end(),
+                     reinterpret_cast<uint8_t*>(block_dims),
+                     reinterpret_cast<uint8_t*>(block_dims) + sizeof(block_dims));
+
+    // User arguments (already 32-bit device addresses and scalars)
+    if (device_args && num_args > 0) {
+        const uint8_t* args_bytes = reinterpret_cast<const uint8_t*>(device_args);
+        arg_buffer.insert(arg_buffer.end(),
+                         args_bytes,
+                         args_bytes + (num_args * sizeof(uint32_t)));
+    }
+
+    // Upload arguments to device
+    vx_buffer_h arg_buffer_device;
+    int result = vx_upload_bytes(g_device_state.device,
+                                  arg_buffer.data(),
+                                  arg_buffer.size(),
+                                  &arg_buffer_device);
+    if (result != 0) {
+        SetLastError(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    // Launch kernel
+    result = vx_start(g_device_state.device,
+                      kernel_info.kernel_binary,
+                      arg_buffer_device);
+
+    if (result != 0) {
+        SetLastError(hipErrorLaunchFailure);
+        return hipErrorLaunchFailure;
+    }
+
+    return hipSuccess;
+}
+
+hipError_t hip_get_vortex_buffer(const void* host_ptr, void** buffer) {
+    if (!host_ptr || !buffer) {
+        SetLastError(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    auto it = g_allocations.find(const_cast<void*>(host_ptr));
+    if (it == g_allocations.end()) {
+        SetLastError(hipErrorInvalidValue);
+        return hipErrorInvalidValue;
+    }
+
+    *buffer = it->second.buffer;
     return hipSuccess;
 }

@@ -63,7 +63,7 @@ public:
   static bool compare(float a, float b, int index, int errors) {
     if (fabs(a - b) > 1e-3f) {
       if (errors < 100) {
-        printf("*** error: [%d] expected=%f, actual=%f\n", index, b, a);
+        printf("*** error: [%d] expected=%f, actual=%f\n", index, (double)b, (double)a);
       }
       return false;
     }
@@ -159,7 +159,8 @@ int main(int argc, char *argv[]) {
 
   // Launch kernel
   printf("launch kernel\n");
-  int threads_per_block = 64;
+  // Note: Vortex supports max 16 threads per block
+  int threads_per_block = 16;
   int num_blocks = (M + threads_per_block - 1) / threads_per_block;
 
   hipLaunchKernelGGL(sgemv_kernel, dim3(num_blocks), dim3(threads_per_block), 0, 0,

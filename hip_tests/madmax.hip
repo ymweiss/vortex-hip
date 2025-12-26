@@ -155,7 +155,8 @@ int main(int argc, char *argv[]) {
 
   // Launch kernel
   printf("launch kernel\n");
-  dim3 threads_per_block(16, 16);
+  // Vortex supports max 16 threads per block
+  dim3 threads_per_block(4, 4);
   dim3 num_blocks((size + threads_per_block.x - 1) / threads_per_block.x,
                   (size + threads_per_block.y - 1) / threads_per_block.y);
 
@@ -188,7 +189,7 @@ int main(int argc, char *argv[]) {
 
     if (std::abs(actual.i - expected.i) > FLOAT_ULP) {
       if (errors < 100) {
-        printf("*** error: [%d] expected=%f, actual=%f\n", i, expected.f, actual.f);
+        printf("*** error: [%d] expected=%f, actual=%f\n", i, (double)expected.f, (double)actual.f);
       }
       ++errors;
     }

@@ -40,16 +40,17 @@
 
 // Tensor Core Unit configuration
 // These define the tile sizes for matrix multiplication
+// Vortex supports max 16 threads per block (TILE_M * TILE_N <= 16)
 #ifndef TILE_M
-#define TILE_M 16
+#define TILE_M 4
 #endif
 
 #ifndef TILE_N
-#define TILE_N 16
+#define TILE_N 4
 #endif
 
 #ifndef TILE_K
-#define TILE_K 16
+#define TILE_K 4
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -138,8 +139,11 @@ int main(int argc, char *argv[]) {
   uint32_t buf_size_B = size_B * sizeof(ITYPE);
   uint32_t buf_size_C = size_C * sizeof(OTYPE);
 
-  std::cout << "Input data type: " << typeid(ITYPE).name() << std::endl;
-  std::cout << "Output data type: " << typeid(OTYPE).name() << std::endl;
+// Use macro stringification instead of typeid (avoids <typeinfo> dependency)
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+  std::cout << "Input data type: " << TOSTRING(ITYPE) << std::endl;
+  std::cout << "Output data type: " << TOSTRING(OTYPE) << std::endl;
   std::cout << "Tile Dimension: M=" << TILE_M << ", N=" << TILE_N << ", K=" << TILE_K << std::endl;
   std::cout << "Matrix A: " << M << "x" << K << std::endl;
   std::cout << "Matrix B: " << K << "x" << N << std::endl;
@@ -215,7 +219,7 @@ int main(int argc, char *argv[]) {
       if (diff > tolerance) {
         if (errors < 100) {
           printf("*** error: [%d,%d] expected=%f, actual=%f, diff=%f\n",
-                 row, col, sum, cur, diff);
+                 row, col, (double)sum, (double)cur, (double)diff);
         }
         ++errors;
       }
