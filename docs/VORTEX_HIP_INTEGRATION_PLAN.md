@@ -17,11 +17,16 @@ vortex_hip/                    # Development workspace (NOT the final structure)
 └── scripts/                   # Build scripts
 ```
 
+**Architecture Notes:**
+- **llvm-vortex**: Backend only (LLC for LLVM IR → RISC-V, clang for linking)
+- **Polygeist/llvm-project**: Frontend/MLIR infrastructure (KernelOutlining, GPU dialect, etc.)
+- These serve different purposes and have incompatible API versions (18.0 vs 18.1)
+
 **Issues:**
-1. Two separate LLVM builds (llvm-vortex + Polygeist/llvm-project)
+1. ~~Two separate LLVM builds~~ (RESOLVED: Different purposes, cannot consolidate)
 2. HIP components scattered across multiple directories
 3. No integration with Vortex CI/build system
-4. 32-bit only (hardcoded i32 in passes and runtime)
+4. ~~32-bit only~~ (RESOLVED: XLEN parameterization implemented)
 
 ---
 
@@ -90,17 +95,22 @@ vortex/                        # Primary repository
 
 ---
 
-### Phase 1: Consolidate LLVM Submodules
+### Phase 1: ~~Consolidate LLVM Submodules~~ (NOT FEASIBLE)
 
-**Objective:** Replace Polygeist's llvm-project with llvm-vortex
+**Original Objective:** Replace Polygeist's llvm-project with llvm-vortex
 
-**Steps:**
-1. Cherry-pick 5 KernelOutlining commits to llvm-vortex branch
-2. Update Polygeist to use llvm-vortex as submodule instead of llvm-project
-3. Verify Polygeist builds against llvm-vortex
-4. Test all 23 HIP tests pass
+**Why Not Feasible:**
+- llvm-vortex (LLVM 18.1) and Polygeist's llvm-project (LLVM 18.0) have API incompatibilities
+- `LLVM::GEPOp::build()` signature changed (opaque pointer transition)
+- Polygeist's MLIR passes (ParallelLoopDistribute, etc.) use older API
+- Different build targets: llvm-vortex needs RISCV, Polygeist needs host;NVPTX
 
-**Result:** Single LLVM build, ~50% build time reduction
+**Current Architecture:**
+- **llvm-vortex**: Backend (LLC, clang linker) - builds in ~5 min
+- **Polygeist/llvm-project**: Frontend (cgeist, MLIR) - builds in ~20 min
+- Both are required, serve different purposes
+
+**Status:** SKIPPED - Keep dual LLVM builds
 
 ---
 
@@ -202,44 +212,41 @@ Based on dependencies and risk:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Phase 0: Code Cleanup (Pre-Integration)                     │
+│ Phase 0: Code Cleanup (Pre-Integration)        ✓ COMPLETED  │
 │ - Remove InsertVortexDivergence pass (unused)               │
 │ - Archive/remove obsolete documentation                     │
 │ - Clean up dead code and debug statements                   │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ Phase 2: 64-bit Support (FIRST - before submodule changes)  │
+│ Phase 2: 64-bit Support                        ✓ COMPLETED  │
 │ - Add pointerWidth option to Polygeist passes               │
 │ - Parameterize CSR reads, pointer loads, arg offsets        │
-│ - Test on RV64 Vortex simulator                             │
+│ - XLEN=32 (default) or XLEN=64 via compile script           │
 │ - See: 64BIT_PARAMETERIZATION_ANALYSIS.md                   │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ Phase 1: Consolidate LLVM Submodules                        │
-│ - Cherry-pick KernelOutlining to llvm-vortex                │
-│ - Polygeist uses llvm-vortex submodule                      │
-│ - Verify 23 HIP tests pass                                  │
+│ Phase 1: LLVM Consolidation                       SKIPPED   │
+│ - NOT FEASIBLE: LLVM API incompatibilities                  │
+│ - Keep dual builds: llvm-vortex (backend) + Polygeist LLVM  │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ Phase 3: Build System Integration                           │
+│ Phase 3: Build System Integration                  PENDING  │
 │ - Add HIP toolchain to CI scripts                           │
 │ - CMake/Makefile HIP targets                                │
 │ - Build detection (HIP vs standard)                         │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ Phase 4: Repository Restructuring                           │
+│ Phase 4: Repository Restructuring                  PENDING  │
 │ - Polygeist as submodule                                    │
 │ - HIP runtime in vortex/runtime/hip                         │
 │ - HIP tests in vortex/tests/hip                             │
 │ - Update documentation                                      │
 └─────────────────────────────────────────────────────────────┘
 ```
-
-**Note:** Phase 2 (64-bit) is done BEFORE Phase 1 (submodule consolidation) so all llvm-project changes can be applied at once during cherry-picking.
 
 ---
 
