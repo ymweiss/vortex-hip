@@ -216,6 +216,7 @@ Based on dependencies and risk:
 │ - Remove InsertVortexDivergence pass (unused)               │
 │ - Archive/remove obsolete documentation                     │
 │ - Clean up dead code and debug statements                   │
+│ Merged: PR #12 (vortex_hip), PR #12 (Polygeist)             │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -224,12 +225,21 @@ Based on dependencies and risk:
 │ - Parameterize CSR reads, pointer loads, arg offsets        │
 │ - XLEN=32 (default) or XLEN=64 via compile script           │
 │ - See: 64BIT_PARAMETERIZATION_ANALYSIS.md                   │
+│ Merged: PR #16 (vortex_hip), PR #11 (Polygeist)             │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ Phase 1: LLVM Consolidation                       SKIPPED   │
 │ - NOT FEASIBLE: LLVM API incompatibilities                  │
 │ - Keep dual builds: llvm-vortex (backend) + Polygeist LLVM  │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Phase 2C: RV64 Testing                             PENDING  │
+│ - Build Vortex with XLEN=64 configuration                   │
+│ - Run HIP test suite on RV64 simulator                      │
+│ - Verify correct pointer handling and memory layout         │
+│ - Fix any 64-bit specific issues discovered                 │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
