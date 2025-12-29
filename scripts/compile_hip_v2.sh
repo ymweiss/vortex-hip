@@ -84,6 +84,39 @@ run_cmd() {
     "$@"
 }
 
+# XLEN configuration: 32 for RV32, 64 for RV64
+# Set XLEN=64 environment variable for 64-bit Vortex
+XLEN="${XLEN:-32}"
+if [ "$XLEN" != "32" ] && [ "$XLEN" != "64" ]; then
+    log_error "Invalid XLEN value: $XLEN (must be 32 or 64)"
+    exit 1
+fi
+
+# RISC-V target configuration based on XLEN
+if [ "$XLEN" = "64" ]; then
+    RISCV_TRIPLE="riscv64-unknown-unknown-elf"
+    RISCV_MARCH="riscv64"
+    RISCV_MATTR="+m,+a,+f,+d,+vortex"
+    RISCV_TARGET_MARCH="rv64imafd"
+    RISCV_MABI="lp64d"
+    LINK_SCRIPT="link64.ld"
+    LIBC_VORTEX="${LIBC_VORTEX:-$HOME/tools/libc64}"
+    LIBCRT_VORTEX="${LIBCRT_VORTEX:-$HOME/tools/libcrt64}"
+    RISCV_TOOLCHAIN="${RISCV_TOOLCHAIN:-$HOME/tools/riscv64-gnu-toolchain}"
+    OBJCOPY_BIN="riscv64-unknown-elf-objcopy"
+else
+    RISCV_TRIPLE="riscv32-unknown-unknown-elf"
+    RISCV_MARCH="riscv32"
+    RISCV_MATTR="+m,+a,+f,+vortex"
+    RISCV_TARGET_MARCH="rv32imaf"
+    RISCV_MABI="ilp32f"
+    LINK_SCRIPT="link32.ld"
+    LIBC_VORTEX="${LIBC_VORTEX:-$HOME/tools/libc32}"
+    LIBCRT_VORTEX="${LIBCRT_VORTEX:-$HOME/tools/libcrt32}"
+    RISCV_TOOLCHAIN="${RISCV_TOOLCHAIN:-$HOME/tools/riscv32-gnu-toolchain}"
+    OBJCOPY_BIN="riscv32-unknown-elf-objcopy"
+fi
+
 usage() {
     cat << 'EOF'
 Streamlined HIP to Vortex Compilation Pipeline (v2)
@@ -104,8 +137,13 @@ Options:
   --verbose       Show all commands
   --help          Show this help
 
+Environment Variables:
+  XLEN=32|64      Target pointer width (default: 32)
+                  Set XLEN=64 for 64-bit Vortex (RV64)
+
 Example:
   ./scripts/compile_hip_v2.sh hip_tests/vecadd.hip -o vecadd
+  XLEN=64 ./scripts/compile_hip_v2.sh hip_tests/vecadd.hip -o vecadd64
 
 Source file requirements:
   - Use hipLaunchKernelGGL(kernel, grid, block, 0, 0, args...)
@@ -263,6 +301,11 @@ compile_device_mlir() {
     # Note: --emit-host-functions is required so that wrapper functions containing
     # <<<>>> syntax are compiled in device mode. Without it, host-only functions
     # (like __launch_*) are skipped, leaving them with empty bodies.
+    # Debug: add --pm-enable-printing to trace pass pipeline
+    PM_PRINT_FLAG=""
+    if [ "${DEBUG_PASSES:-0}" = "1" ]; then
+        PM_PRINT_FLAG="--pm-enable-printing"
+    fi
     run_cmd "$CGEIST" "$TRANSFORMED_CU" \
         --cuda-lower \
         --emit-cuda \
@@ -277,6 +320,7 @@ compile_device_mlir() {
         --function='*' \
         --output-intermediate-gpu=1 \
         --dump-hip-kernels \
+        $PM_PRINT_FLAG \
         -S \
         -o "$GPU_MLIR" 2>&1
 
@@ -316,8 +360,9 @@ convert_to_vortex() {
     pushd "$WORK_DIR" > /dev/null
 
     # Strip host-only functions before lowering to device code
+    # Pass pointer-width for RV32/RV64 support
     run_cmd "$POLYGEIST_OPT" "$GPU_MLIR" \
-        --convert-gpu-to-vortex \
+        "--convert-gpu-to-vortex=pointer-width=$XLEN" \
         --strip-host-only-functions \
         -o "$VORTEX_MLIR" 2>&1
 
@@ -358,142 +403,239 @@ mlir_to_llvm() {
         --convert-scf-to-cf \
         --convert-arith-to-llvm \
         --finalize-memref-to-llvm \
-        --convert-index-to-llvm=index-bitwidth=32 \
+        "--convert-index-to-llvm=index-bitwidth=$XLEN" \
         --convert-func-to-llvm \
         --convert-cf-to-llvm \
         --reconcile-unrealized-casts \
         -o "$LLVM_DIALECT" 2>&1
 
-    # Stage 3b: Generate Vortex main wrapper
-    MAIN_MLIR="/tmp/${BASENAME}_$$.main.mlir"
-    log_info "  Generating Vortex main wrapper..."
-    run_cmd "$POLYGEIST_OPT" "$LLVM_DIALECT" \
-        --generate-vortex-main \
-        -o "$MAIN_MLIR" 2>&1
+    # Check for multiple kernels
+    KERNEL_LIST=$("$POLYGEIST_OPT" "$LLVM_DIALECT" --split-kernel-modules 2>&1 | grep "^KERNEL:" | sed 's/^KERNEL://')
+    if [ -n "$KERNEL_LIST" ]; then
+        KERNEL_COUNT=$(echo "$KERNEL_LIST" | wc -l)
+    else
+        KERNEL_COUNT=0
+    fi
 
-    # Stage 3c: Translate to LLVM IR
-    log_info "  Translating to LLVM IR..."
-    run_cmd "$MLIR_TRANSLATE" \
-        --mlir-to-llvmir \
-        "$MAIN_MLIR" \
-        -o "$KERNEL_LL" 2>&1
+    if [ "$KERNEL_COUNT" -gt 1 ]; then
+        log_info "  Found $KERNEL_COUNT kernels - compiling separately"
+        MULTI_KERNEL=1
+        # Store kernel list for later use
+        echo "$KERNEL_LIST" > "$WORK_DIR/.kernel_list"
+    else
+        MULTI_KERNEL=0
+    fi
 
-    # Cleanup intermediate files
+    if [ "$MULTI_KERNEL" -eq 1 ]; then
+        # Multi-kernel mode: process each kernel separately
+        for KNAME in $KERNEL_LIST; do
+            log_info "  Processing kernel: $KNAME"
+
+            # Extract this kernel into a separate module
+            KERNEL_MLIR="/tmp/${BASENAME}_${KNAME}_$$.mlir"
+            run_cmd "$POLYGEIST_OPT" "$LLVM_DIALECT" \
+                "--split-kernel-modules=kernel=$KNAME" \
+                -o "$KERNEL_MLIR" 2>&1
+
+            # Generate main wrapper for this kernel
+            MAIN_MLIR="/tmp/${BASENAME}_${KNAME}_main_$$.mlir"
+            run_cmd "$POLYGEIST_OPT" "$KERNEL_MLIR" \
+                "--generate-vortex-main=pointer-width=$XLEN" \
+                -o "$MAIN_MLIR" 2>&1
+
+            # Translate to LLVM IR
+            KERNEL_LL_FILE="/tmp/${BASENAME}_${KNAME}_$$.ll"
+            run_cmd "$MLIR_TRANSLATE" \
+                --mlir-to-llvmir \
+                "$MAIN_MLIR" \
+                -o "$KERNEL_LL_FILE" 2>&1
+
+            # Store the .ll file path for compile_kernel_binary
+            echo "$KERNEL_LL_FILE" >> "$WORK_DIR/.kernel_ll_files"
+
+            # Cleanup intermediate files
+            if [ "$KEEP_TEMPS" -eq 0 ]; then
+                rm -f "$KERNEL_MLIR" "$MAIN_MLIR"
+            fi
+        done
+        log_success "LLVM IR generated for $KERNEL_COUNT kernels"
+    else
+        # Single kernel mode: original behavior
+        # Stage 3b: Generate Vortex main wrapper
+        MAIN_MLIR="/tmp/${BASENAME}_$$.main.mlir"
+        log_info "  Generating Vortex main wrapper..."
+        run_cmd "$POLYGEIST_OPT" "$LLVM_DIALECT" \
+            "--generate-vortex-main=pointer-width=$XLEN" \
+            -o "$MAIN_MLIR" 2>&1
+
+        # Stage 3c: Translate to LLVM IR
+        log_info "  Translating to LLVM IR..."
+        run_cmd "$MLIR_TRANSLATE" \
+            --mlir-to-llvmir \
+            "$MAIN_MLIR" \
+            -o "$KERNEL_LL" 2>&1
+
+        # Cleanup intermediate files
+        if [ "$KEEP_TEMPS" -eq 0 ]; then
+            rm -f "$LLVM_DIALECT" "$MAIN_MLIR"
+        else
+            log_info "  Kept: $LLVM_DIALECT"
+            log_info "  Kept: $MAIN_MLIR"
+        fi
+
+        if [ ! -f "$KERNEL_LL" ]; then
+            log_error "mlir-translate failed"
+            exit 1
+        fi
+
+        log_success "LLVM IR generated"
+    fi
+
+    # Cleanup LLVM dialect file
     if [ "$KEEP_TEMPS" -eq 0 ]; then
-        rm -f "$LLVM_DIALECT" "$MAIN_MLIR"
+        rm -f "$LLVM_DIALECT"
     else
         log_info "  Kept: $LLVM_DIALECT"
-        log_info "  Kept: $MAIN_MLIR"
     fi
-
-    if [ ! -f "$KERNEL_LL" ]; then
-        log_error "mlir-translate failed"
-        exit 1
-    fi
-
-    log_success "LLVM IR generated"
 }
 
 #==============================================================================
 # Stage 4: LLVM IR → RISC-V Binary
 #==============================================================================
-compile_kernel_binary() {
-    log_info "Stage 4: LLVM IR → RISC-V binary"
+
+# Helper function to compile a single kernel .ll to .vxbin
+compile_single_kernel() {
+    local LL_FILE="$1"
+    local VXBIN_NAME="$2"
 
     LLC_VORTEX="$LLVM_VORTEX/bin/llc"
     check_tool "$LLC_VORTEX" "llc (llvm-vortex)"
     check_tool "$CLANG_VORTEX" "clang (llvm-vortex)"
 
-    # Get toolchain paths
-    LIBC_VORTEX="${LIBC_VORTEX:-$HOME/tools/libc32}"
-    LIBCRT_VORTEX="${LIBCRT_VORTEX:-$HOME/tools/libcrt32}"
-    RISCV_TOOLCHAIN="${RISCV_TOOLCHAIN:-$HOME/tools/riscv32-gnu-toolchain}"
+    # Note: LIBC_VORTEX, LIBCRT_VORTEX, RISCV_TOOLCHAIN are set based on XLEN at top of script
 
-    # Extract kernel name from generated metadata
-    # Prefer metadata file matching the input source basename
-    # This handles the case where multiple .meta.json files exist from previous runs
-    META_FILE=""
-    if [ -f "$WORK_DIR/${BASENAME}_kernel.meta.json" ]; then
-        META_FILE="$WORK_DIR/${BASENAME}_kernel.meta.json"
+    local KERNEL_OBJ="/tmp/$(basename "$LL_FILE" .ll).o"
+    local KERNEL_ELF="/tmp/$(basename "$LL_FILE" .ll).elf"
+
+    # Determine libclang_rt builtins library name based on XLEN
+    local BUILTINS_LIB
+    if [ "$XLEN" = "64" ]; then
+        BUILTINS_LIB="libclang_rt.builtins-riscv64.a"
     else
-        # Fall back to first available meta file
-        META_FILE=$(ls "$WORK_DIR"/*.meta.json 2>/dev/null | head -1)
+        BUILTINS_LIB="libclang_rt.builtins-riscv32.a"
     fi
 
-    if [ -n "$META_FILE" ] && [ -f "$META_FILE" ]; then
-        KERNEL_BASE=$(basename "$META_FILE" .meta.json)
-        VXBIN_NAME="${KERNEL_NAME:-${KERNEL_BASE}.vxbin}"
-        log_info "  Using metadata: $(basename "$META_FILE")"
-    else
-        VXBIN_NAME="${KERNEL_NAME:-${BASENAME}_kernel.vxbin}"
-        log_warn "  No metadata found, using default kernel name"
-    fi
-
-    KERNEL_OBJ="/tmp/${BASENAME}_$$.o"
-    KERNEL_ELF="/tmp/${BASENAME}_$$.elf"
-
-    # Stage 4a: LLVM IR → RISC-V object
-    log_info "  Compiling LLVM IR to RISC-V object..."
+    # LLVM IR → RISC-V object (uses XLEN-configured variables)
     run_cmd "$LLC_VORTEX" \
-        --mtriple=riscv32-unknown-unknown-elf \
-        -march=riscv32 \
-        -mattr=+m,+a,+f,+vortex \
+        --mtriple="$RISCV_TRIPLE" \
+        -march="$RISCV_MARCH" \
+        -mattr="$RISCV_MATTR" \
         --vortex-branch-divergence=1 \
         -filetype=obj \
-        "$KERNEL_LL" \
+        "$LL_FILE" \
         -o "$KERNEL_OBJ" 2>&1
 
     if [ ! -f "$KERNEL_OBJ" ]; then
-        log_error "LLC compilation failed"
-        exit 1
+        log_error "LLC compilation failed for $LL_FILE"
+        return 1
     fi
 
-    # Stage 4b: Link to ELF
-    log_info "  Linking to ELF..."
+    # Link to ELF (uses XLEN-configured variables)
     if [ -f "$VORTEX_HOME/build/kernel/libvortex.a" ] && [ -d "$LIBC_VORTEX" ]; then
         run_cmd "$CLANG_VORTEX" \
-            -target riscv32-unknown-elf \
-            -march=rv32imaf -mabi=ilp32f \
+            -target "${RISCV_TRIPLE%-unknown-elf}-elf" \
+            -march="$RISCV_TARGET_MARCH" -mabi="$RISCV_MABI" \
             -mcmodel=medany \
             -fno-rtti -fno-exceptions \
             -nostartfiles -nostdlib \
             "$KERNEL_OBJ" \
             -Wl,-Bstatic,--gc-sections,-z,norelro \
-            -Wl,-T,"$VORTEX_HOME/kernel/scripts/link32.ld" \
+            -Wl,-T,"$VORTEX_HOME/kernel/scripts/$LINK_SCRIPT" \
             -Wl,--defsym=STARTUP_ADDR=0x80000000 \
             "$VORTEX_HOME/build/kernel/libvortex.a" \
             -L"$LIBC_VORTEX/lib" -lm -lc \
-            "$LIBCRT_VORTEX/lib/baremetal/libclang_rt.builtins-riscv32.a" \
+            "$LIBCRT_VORTEX/lib/baremetal/$BUILTINS_LIB" \
             -o "$KERNEL_ELF" 2>&1 || {
-                log_warn "ELF linking failed - toolchain may be missing"
-                log_warn "Keeping object file instead"
+                log_warn "ELF linking failed for $VXBIN_NAME"
                 mv "$KERNEL_OBJ" "$WORK_DIR/${VXBIN_NAME%.vxbin}.o"
                 return 0
             }
     else
-        log_warn "Vortex libraries or libc not found - skipping ELF linking"
         mv "$KERNEL_OBJ" "$WORK_DIR/${VXBIN_NAME%.vxbin}.o"
-        log_success "Kernel object: $WORK_DIR/${VXBIN_NAME%.vxbin}.o"
         return 0
     fi
 
     rm -f "$KERNEL_OBJ"
 
-    # Stage 4c: ELF → Vortex binary
-    log_info "  Converting to Vortex binary..."
+    # ELF → Vortex binary
     if [ -f "$VXBIN_PY" ]; then
-        export OBJCOPY="$RISCV_TOOLCHAIN/bin/riscv32-unknown-elf-objcopy"
+        export OBJCOPY="$RISCV_TOOLCHAIN/bin/$OBJCOPY_BIN"
         run_cmd python3 "$VXBIN_PY" \
             "$KERNEL_ELF" \
             "$WORK_DIR/$VXBIN_NAME" 2>&1
         rm -f "$KERNEL_ELF"
     else
-        # Fallback: keep ELF file
         mv "$KERNEL_ELF" "$WORK_DIR/$VXBIN_NAME"
-        log_warn "vxbin.py not found - kernel saved as ELF"
     fi
 
-    log_success "Kernel binary: $WORK_DIR/$VXBIN_NAME"
+    return 0
+}
+
+compile_kernel_binary() {
+    log_info "Stage 4: LLVM IR → RISC-V binary"
+
+    # Check if we're in multi-kernel mode
+    if [ -f "$WORK_DIR/.kernel_ll_files" ]; then
+        # Multi-kernel mode: compile each kernel separately
+        log_info "  Multi-kernel mode: compiling each kernel..."
+
+        while read -r LL_FILE; do
+            # Extract kernel name from filename (format: basename_kernelname_pid.ll)
+            KNAME=$(basename "$LL_FILE" | sed "s/^${BASENAME}_//" | sed 's/_[0-9]*\.ll$//')
+            VXBIN_NAME="${KNAME}.vxbin"
+
+            log_info "  Compiling kernel: $KNAME"
+            compile_single_kernel "$LL_FILE" "$VXBIN_NAME"
+
+            if [ -f "$WORK_DIR/$VXBIN_NAME" ]; then
+                log_success "  Kernel binary: $WORK_DIR/$VXBIN_NAME"
+            fi
+
+            # Cleanup .ll file
+            if [ "$KEEP_TEMPS" -eq 0 ]; then
+                rm -f "$LL_FILE"
+            fi
+        done < "$WORK_DIR/.kernel_ll_files"
+
+        # Cleanup tracking file
+        rm -f "$WORK_DIR/.kernel_ll_files" "$WORK_DIR/.kernel_list"
+
+        KERNEL_COUNT=$(ls "$WORK_DIR"/*.vxbin 2>/dev/null | wc -l)
+        log_success "Generated $KERNEL_COUNT kernel binaries"
+    else
+        # Single kernel mode: original behavior
+        # Note: Toolchain paths are set based on XLEN at top of script
+
+        # Extract kernel name from generated metadata
+        META_FILE=""
+        if [ -f "$WORK_DIR/${BASENAME}_kernel.meta.json" ]; then
+            META_FILE="$WORK_DIR/${BASENAME}_kernel.meta.json"
+        else
+            META_FILE=$(ls "$WORK_DIR"/*.meta.json 2>/dev/null | head -1)
+        fi
+
+        if [ -n "$META_FILE" ] && [ -f "$META_FILE" ]; then
+            KERNEL_BASE=$(basename "$META_FILE" .meta.json)
+            VXBIN_NAME="${KERNEL_NAME:-${KERNEL_BASE}.vxbin}"
+            log_info "  Using metadata: $(basename "$META_FILE")"
+        else
+            VXBIN_NAME="${KERNEL_NAME:-${BASENAME}_kernel.vxbin}"
+            log_warn "  No metadata found, using default kernel name"
+        fi
+
+        compile_single_kernel "$KERNEL_LL" "$VXBIN_NAME"
+        log_success "Kernel binary: $WORK_DIR/$VXBIN_NAME"
+    fi
 }
 
 #==============================================================================
@@ -511,7 +653,7 @@ compile_host_library() {
     HOST_MLIR="/tmp/${BASENAME}_host_$$.mlir"
     log_info "  Converting launch operations to host calls..."
     run_cmd "$POLYGEIST_OPT" "$GPU_MLIR" \
-        --convert-gpu-launch-to-host-call \
+        "--convert-gpu-launch-to-host-call=pointer-width=$XLEN" \
         -o "$HOST_MLIR" 2>&1
 
     if [ ! -f "$HOST_MLIR" ]; then
@@ -692,6 +834,7 @@ echo "=========================================="
 echo "HIP to Vortex Compilation Pipeline (v2)"
 echo "=========================================="
 echo "Input: $INPUT_FILE"
+echo "Target: RV${XLEN} ($RISCV_TARGET_MARCH/$RISCV_MABI)"
 echo ""
 
 if [ "$HOST_ONLY" -eq 0 ]; then
